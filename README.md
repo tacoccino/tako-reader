@@ -37,20 +37,14 @@ source .venv/bin/activate
 .venv\Scripts\activate
 ```
 
-### 3. Install core dependencies
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Japanese OCR (optional but recommended)
-
-```bash
-pip install manga-ocr
-```
-
-> **Note:** `manga-ocr` will download a ~400 MB transformer model on **first use**.
-> After that it's cached locally. On slower machines, first OCR call takes ~10 sec.
+> **Note:** `manga-ocr` is included and will download a ~400 MB transformer model on **first use**.
+> It's cached locally after that. If you don't need OCR, comment it out in `requirements.txt` before installing.
 
 ---
 

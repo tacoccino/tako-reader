@@ -242,7 +242,7 @@ class OCRPanel(QWidget):
         layout.setSpacing(6)
 
         title = QLabel("📖 OCR / Text")
-        title.setFont(QFont("", 11, QFont.Weight.Bold))
+        title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         layout.addWidget(title)
 
         self.text_box = QTextEdit()
@@ -286,7 +286,7 @@ class OCRPanel(QWidget):
                 color: #fff;
                 border-radius: 6px;
                 padding: 6px 10px;
-                font-size: 13px;
+                font-size: 10pt;
                 font-weight: bold;
             }
             QPushButton:hover { background: #3a7abf; }
@@ -306,7 +306,7 @@ class OCRPanel(QWidget):
                 color: #fff;
                 border-radius: 6px;
                 padding: 6px 10px;
-                font-size: 13px;
+                font-size: 10pt;
                 font-weight: bold;
             }
             QPushButton:hover { background: #4e8a65; }
@@ -556,7 +556,7 @@ class TakoReader(QMainWindow):
             b.setStyleSheet("""
                 QPushButton {
                     background: #2a2a2a; color: #ddd; border-radius: 6px;
-                    padding: 0 14px; font-size: 13px;
+                    padding: 0 14px; font-size: 10pt;
                 }
                 QPushButton:hover { background: #3584e4; }
                 QPushButton:disabled { color: #555; }
@@ -568,7 +568,7 @@ class TakoReader(QMainWindow):
         self.btn_last.clicked.connect(lambda: self.go_to_page(len(self._pages) - 1))
 
         self.page_label = QLabel("— / —")
-        self.page_label.setStyleSheet("color: #aaa; font-size: 13px;")
+        self.page_label.setStyleSheet("color: #aaa; font-size: 10pt;")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_label.setFixedWidth(90)
 
@@ -660,7 +660,7 @@ class TakoReader(QMainWindow):
         tb.setStyleSheet("""
             QToolBar { background: #1e1e1e; border-bottom: 1px solid #2a2a2a; spacing: 4px; padding: 2px; }
             QToolButton { background: transparent; color: #ccc; border-radius: 4px;
-                          padding: 4px 10px; font-size: 13px; }
+                          padding: 4px 10px; font-size: 13pt; }
             QToolButton:hover { background: #2e2e2e; }
             QToolButton:checked { background: #3584e4; color: white; }
         """)
@@ -850,7 +850,7 @@ class TakoReader(QMainWindow):
             QMenuBar::item:selected { background: #3584e4; }
             QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
             QMenu::item:selected { background: #3584e4; }
-            QStatusBar { background: #1e1e1e; color: #888; font-size: 12px; }
+            QStatusBar { background: #1e1e1e; color: #888; font-size: 9pt; }
             QScrollBar:vertical { background: #1a1a1a; width: 10px; }
             QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 30px; }
             QScrollBar:horizontal { background: #1a1a1a; height: 10px; }
@@ -872,14 +872,14 @@ class TakoReader(QMainWindow):
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 def main():
+    # Must be set before QApplication is created
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+
     app = QApplication(sys.argv)
     app.setApplicationName("TakoReader")
     app.setOrganizationName("TakoReaderJP")
-
-    # High-DPI support
-    app.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
 
     window = TakoReader()
     window.show()
