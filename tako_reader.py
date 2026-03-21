@@ -39,51 +39,174 @@ from PyQt6.QtGui import (
 #  Resize is handled via Qt mouse events on all platforms instead.)
 
 
-# ─── OCR Worker Thread ───────────────────────────────────────────────────────
+# ─── OCR Process Manager ─────────────────────────────────────────────────────
+# Keeps a single long-lived subprocess alive so the model loads once.
+# The child reads one JSON line per request and writes one JSON line per result,
+# so it stays hot between OCR calls.
+
+_OCR_PROCESS_SCRIPT = """
+import sys, json, base64, io
+
+def main():
+    # Load model once, then loop reading requests from stdin
+    device = sys.argv[1] if len(sys.argv) > 1 else "cpu"
+    try:
+        import manga_ocr
+        from PIL import Image as PILImage
+        model = manga_ocr.MangaOcr(force_cpu=(device == "cpu"))
+        # Signal ready
+        print(json.dumps({"ready": True}), flush=True)
+    except Exception:
+        import traceback
+        print(json.dumps({"ready": False, "error": traceback.format_exc()}), flush=True)
+        return
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            img_bytes = base64.b64decode(data["image_b64"])
+            pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
+            text = model(pil_img)
+            print(json.dumps({"ok": True, "text": text}), flush=True)
+        except Exception:
+            import traceback
+            print(json.dumps({"ok": False, "error": traceback.format_exc()}), flush=True)
+
+main()
+"""
+
+
+class OCRProcessManager:
+    """
+    Singleton-per-device that owns a long-lived OCR subprocess.
+    The process loads manga_ocr once, then handles unlimited requests.
+    """
+    _instances: dict = {}
+
+    @classmethod
+    def get(cls, device: str) -> "OCRProcessManager":
+        if device not in cls._instances:
+            cls._instances[device] = cls(device)
+        return cls._instances[device]
+
+    @classmethod
+    def shutdown_all(cls):
+        for mgr in cls._instances.values():
+            mgr._stop()
+        cls._instances.clear()
+
+    def __init__(self, device: str):
+        self.device  = device
+        self._proc   = None
+        self._ready  = False
+        self._error  = None
+
+    def _start(self):
+        """Launch the worker process and wait for its ready signal."""
+        import subprocess
+        self._proc = subprocess.Popen(
+            [sys.executable, "-c", _OCR_PROCESS_SCRIPT, self.device],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # Read the ready line (blocks until model is loaded)
+        ready_line = self._proc.stdout.readline().strip()
+        if ready_line:
+            import json
+            data = json.loads(ready_line)
+            if data.get("ready"):
+                self._ready = True
+            else:
+                self._error = data.get("error", "Unknown startup error")
+                self._stop()
+        else:
+            stderr = self._proc.stderr.read()
+            self._error = stderr or "No ready signal from OCR process"
+            self._stop()
+
+    def _stop(self):
+        if self._proc:
+            try:
+                self._proc.stdin.close()
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except Exception:
+                pass
+            self._proc  = None
+            self._ready = False
+
+    def is_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def run_ocr(self, img_b64: str) -> dict:
+        """Send an image and return the result dict. Blocks until done."""
+        import json
+        if not self.is_alive():
+            self._ready = False
+            self._error = None
+            self._start()
+        if not self._ready:
+            return {"ok": False, "error": self._error or "OCR process failed to start"}
+        try:
+            payload = json.dumps({"image_b64": img_b64}) + "\n"
+            self._proc.stdin.write(payload)
+            self._proc.stdin.flush()
+            result_line = self._proc.stdout.readline().strip()
+            if not result_line:
+                stderr = self._proc.stderr.read()
+                self._stop()
+                return {"ok": False, "error": stderr or "No response from OCR process"}
+            return json.loads(result_line)
+        except Exception:
+            import traceback
+            self._stop()
+            return {"ok": False, "error": traceback.format_exc()}
+
 
 class OCRWorker(QThread):
+    """Qt thread that calls OCRProcessManager so the UI never blocks."""
     result_ready   = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
-
-    _models: dict = {}   # cache keyed by device string
 
     def __init__(self, image: QImage, rect: QRect, device: str = "cpu"):
         super().__init__()
         self.image  = image
         self.rect   = rect
-        self.device = device   # "cpu" | "cuda"
+        self.device = device
 
     def run(self):
         try:
-            import manga_ocr
-        except (ImportError, OSError) as e:
-            self.error_occurred.emit(
-                f"Failed to load manga-ocr / torch:\n{e}\n\n"
-                "If you see a DLL error, reinstall PyTorch (CPU build):\n"
-                "  pip uninstall torch -y && pip cache purge\n"
-                "  pip install torch --index-url https://download.pytorch.org/whl/cpu"
-            )
-            return
-        try:
-            from PIL import Image as PILImage
+            import base64, io
             import numpy as np
+            from PIL import Image as PILImage
 
+            # Crop and encode image
             cropped = self.image.copy(self.rect)
-            w, h    = cropped.width(), cropped.height()
-            ptr     = cropped.bits()
+            w, h = cropped.width(), cropped.height()
+            ptr  = cropped.bits()
             ptr.setsize(h * w * 4)
-            arr     = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
-            pil_img = PILImage.fromarray(arr[:, :, :3])
+            arr  = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+            pil  = PILImage.fromarray(arr[:, :, :3])
+            buf  = io.BytesIO()
+            pil.save(buf, format="PNG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-            # Load (or reuse) model for this device
-            if self.device not in OCRWorker._models:
-                OCRWorker._models[self.device] = manga_ocr.MangaOcr(
-                    force_cpu=(self.device == "cpu")
-                )
-            text = OCRWorker._models[self.device](pil_img)
-            self.result_ready.emit(text)
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+            mgr    = OCRProcessManager.get(self.device)
+            result = mgr.run_ocr(img_b64)
+
+            if result.get("ok"):
+                self.result_ready.emit(result["text"])
+            else:
+                self.error_occurred.emit("OCR error:\n" + result.get('error', 'unknown'))
+
+        except Exception:
+            import traceback
+            self.error_occurred.emit(traceback.format_exc())
 
 
 # ─── Custom Title Bar ─────────────────────────────────────────────────────────
@@ -510,11 +633,12 @@ class OCRPanel(QWidget):
         return self.device_combo.currentData() or "cpu"
 
     def _reload_model(self):
-        """Clear cached model for current device so it reloads on next OCR."""
+        """Restart the OCR worker process for the selected device."""
         dev = self.selected_device()
-        if dev in OCRWorker._models:
-            del OCRWorker._models[dev]
-        self.status.setText(f"Model cache cleared for {dev} — will reload on next OCR")
+        if dev in OCRProcessManager._instances:
+            OCRProcessManager._instances[dev]._stop()
+            del OCRProcessManager._instances[dev]
+        self.status.setText(f"OCR process restarted for {dev}")
 
     def _selected_or_all(self) -> str:
         text = self.text_box.textCursor().selectedText().strip()
@@ -1202,6 +1326,7 @@ class TakoReader(QMainWindow):
 
     def closeEvent(self, event):
         self._settings.setValue("geometry", self.saveGeometry())
+        OCRProcessManager.shutdown_all()
         super().closeEvent(event)
 
 
