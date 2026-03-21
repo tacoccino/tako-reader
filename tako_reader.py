@@ -295,6 +295,26 @@ class OCRPanel(QWidget):
         self.jisho_btn.clicked.connect(self._search_jisho)
         layout.addWidget(self.jisho_btn)
 
+        # ── Takoboto button ──
+        self.takoboto_btn = QPushButton("🐙  Search Takoboto")
+        self.takoboto_btn.setToolTip(
+            "Search selected text on Takoboto.jp\n(uses all text if nothing is selected)"
+        )
+        self.takoboto_btn.setStyleSheet("""
+            QPushButton {
+                background: #3d6b4f;
+                color: #fff;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #4e8a65; }
+            QPushButton:pressed { background: #2b4d38; }
+        """)
+        self.takoboto_btn.clicked.connect(self._search_takoboto)
+        layout.addWidget(self.takoboto_btn)
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -335,14 +355,27 @@ class OCRPanel(QWidget):
         webbrowser.open(url)
         self.status.setText("Opened in browser ↗")
 
+    def _search_takoboto(self):
+        text = self._selected_or_all()
+        if not text:
+            self.status.setText("Nothing to search.")
+            return
+        url = "https://takoboto.jp/?q=" + url_quote(text)
+        webbrowser.open(url)
+        self.status.setText("Opened in browser ↗")
+
     def _show_context_menu(self, pos):
         menu = self.text_box.createStandardContextMenu()
         menu.addSeparator()
+        has_text = bool(self.text_box.toPlainText().strip())
         jisho_act = QAction("🔍  Search Jisho", self)
         jisho_act.triggered.connect(self._search_jisho)
-        # grey out if no text at all
-        jisho_act.setEnabled(bool(self.text_box.toPlainText().strip()))
+        jisho_act.setEnabled(has_text)
         menu.addAction(jisho_act)
+        takoboto_act = QAction("🐙  Search Takoboto", self)
+        takoboto_act.triggered.connect(self._search_takoboto)
+        takoboto_act.setEnabled(has_text)
+        menu.addAction(takoboto_act)
         menu.exec(self.text_box.viewport().mapToGlobal(pos))
 
 
