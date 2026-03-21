@@ -89,9 +89,14 @@ class PageView(QLabel):
         self._fit_mode = "fit_width"  # fit_width | fit_page | custom
         self._ocr_mode = False
 
-        # Rubber-band selection
+        # Rubber-band selection (OCR)
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._sel_origin = QPoint()
+
+        # Pan state (Shift + drag)
+        self._panning = False
+        self._pan_start: QPoint = QPoint()
+        self._scroll_start: QPoint = QPoint()  # scroll bar values at pan start
 
     # ── Public API ──
 
@@ -110,7 +115,15 @@ class PageView(QLabel):
 
     def set_ocr_mode(self, enabled: bool):
         self._ocr_mode = enabled
-        self.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
+        self._update_cursor()
+
+    def _update_cursor(self):
+        if self._panning:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._ocr_mode:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
     # ── Internal ──
 
@@ -142,42 +155,78 @@ class PageView(QLabel):
         if self._fit_mode != "custom":
             self._apply_fit()
 
-    # ── Mouse: rubber-band for OCR ──
+    # ── Mouse: pan (Shift+drag) and rubber-band OCR ──
+
+    def _scroll_area(self):
+        """Walk up to the parent QScrollArea, if any."""
+        p = self.parent()
+        while p:
+            if isinstance(p, QScrollArea):
+                return p
+            p = p.parent()
+        return None
 
     def mousePressEvent(self, event):
-        if self._ocr_mode and event.button() == Qt.MouseButton.LeftButton:
-            self._sel_origin = event.pos()
-            self._rubber_band.setGeometry(QRect(self._sel_origin, QSize()))
-            self._rubber_band.show()
+        if event.button() == Qt.MouseButton.LeftButton:
+            shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            if shift:
+                # Start pan
+                self._panning = True
+                self._pan_start = event.globalPosition().toPoint()
+                sa = self._scroll_area()
+                if sa:
+                    self._scroll_start = QPoint(
+                        sa.horizontalScrollBar().value(),
+                        sa.verticalScrollBar().value()
+                    )
+                self._update_cursor()
+                event.accept()
+                return
+            if self._ocr_mode:
+                self._sel_origin = event.pos()
+                self._rubber_band.setGeometry(QRect(self._sel_origin, QSize()))
+                self._rubber_band.show()
 
     def mouseMoveEvent(self, event):
+        if self._panning:
+            delta = event.globalPosition().toPoint() - self._pan_start
+            sa = self._scroll_area()
+            if sa:
+                sa.horizontalScrollBar().setValue(self._scroll_start.x() - delta.x())
+                sa.verticalScrollBar().setValue(self._scroll_start.y() - delta.y())
+            event.accept()
+            return
         if self._ocr_mode and not self._sel_origin.isNull():
             self._rubber_band.setGeometry(
                 QRect(self._sel_origin, event.pos()).normalized()
             )
 
     def mouseReleaseEvent(self, event):
-        if self._ocr_mode and event.button() == Qt.MouseButton.LeftButton:
-            self._rubber_band.hide()
-            sel = QRect(self._sel_origin, event.pos()).normalized()
-            self._sel_origin = QPoint()
-            if sel.width() > 5 and sel.height() > 5 and self._pixmap_orig:
-                # Map selection from widget coords → original image coords
-                pm = self.pixmap()
-                if pm:
-                    # The pixmap is centered in the label
-                    offset_x = (self.width() - pm.width()) // 2
-                    offset_y = (self.height() - pm.height()) // 2
-                    img_x = int((sel.x() - offset_x) / self._scale)
-                    img_y = int((sel.y() - offset_y) / self._scale)
-                    img_w = int(sel.width() / self._scale)
-                    img_h = int(sel.height() / self._scale)
-                    img_rect = QRect(img_x, img_y, img_w, img_h).intersected(
-                        QRect(0, 0, self._pixmap_orig.width(), self._pixmap_orig.height())
-                    )
-                    if img_rect.isValid():
-                        full_image = self._pixmap_orig.toImage()
-                        self.ocr_requested.emit(full_image, img_rect)
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._panning:
+                self._panning = False
+                self._update_cursor()
+                event.accept()
+                return
+            if self._ocr_mode:
+                self._rubber_band.hide()
+                sel = QRect(self._sel_origin, event.pos()).normalized()
+                self._sel_origin = QPoint()
+                if sel.width() > 5 and sel.height() > 5 and self._pixmap_orig:
+                    pm = self.pixmap()
+                    if pm:
+                        offset_x = (self.width() - pm.width()) // 2
+                        offset_y = (self.height() - pm.height()) // 2
+                        img_x = int((sel.x() - offset_x) / self._scale)
+                        img_y = int((sel.y() - offset_y) / self._scale)
+                        img_w = int(sel.width() / self._scale)
+                        img_h = int(sel.height() / self._scale)
+                        img_rect = QRect(img_x, img_y, img_w, img_h).intersected(
+                            QRect(0, 0, self._pixmap_orig.width(), self._pixmap_orig.height())
+                        )
+                        if img_rect.isValid():
+                            full_image = self._pixmap_orig.toImage()
+                            self.ocr_requested.emit(full_image, img_rect)
 
 
 # ─── OCR Sidebar ────────────────────────────────────────────────────────────
@@ -353,6 +402,7 @@ class TakoReader(QMainWindow):
         self._build_toolbar()
         self._apply_dark_theme()
         self._restore_settings()
+        self.setAcceptDrops(True)
 
     # ── UI Construction ──────────────────────────────────────────────────────
 
@@ -545,6 +595,24 @@ class TakoReader(QMainWindow):
         self.ocr_btn = QAction("🔤 OCR Mode", self, checkable=True)
         self.ocr_btn.triggered.connect(self._toggle_ocr_mode)
         tb.addAction(self.ocr_btn)
+
+    # ── Drag & Drop ──────────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and urls[0].isLocalFile():
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if path:
+                self._load_path(path)
+        event.acceptProposedAction()
 
     # ── File Loading ─────────────────────────────────────────────────────────
 
