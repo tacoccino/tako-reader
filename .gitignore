@@ -1,0 +1,75 @@
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.pyc
+
+# ── Distribution / packaging ──────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+sdist/
+MANIFEST
+
+# ── PyInstaller ───────────────────────────────────────────────────────────────
+*.spec
+# (keep your own .spec if you customise it — remove line above if so)
+
+# ── manga-ocr model cache ─────────────────────────────────────────────────────
+# The model downloads to HuggingFace cache, not the project dir, but just in case:
+*.bin
+*.safetensors
+*.onnx
+
+# ── Qt / app settings ─────────────────────────────────────────────────────────
+# QSettings on macOS writes to ~/Library/Preferences — nothing in project dir.
+# On Windows it writes to the registry. Nothing to ignore here, but keeping
+# this note for reference.
+
+# ── OS cruft ─────────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ── Editors / IDEs ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# ── Testing / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log

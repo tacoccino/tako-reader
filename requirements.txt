@@ -1,0 +1,10 @@
+# Manga Reader — JP Edition
+# Core dependencies
+
+PyQt6>=6.6.0
+PyMuPDF>=1.23.0      # PDF support (imports as `fitz`)
+Pillow>=10.0.0       # Image processing
+numpy>=1.24.0        # Array ops for OCR image conversion
+
+# Japanese OCR (install separately — downloads ~400 MB model on first use)
+# pip install manga-ocr
