@@ -9,7 +9,9 @@ import os
 import zipfile
 import json
 import subprocess
+import webbrowser
 from pathlib import Path
+from urllib.parse import quote as url_quote
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -237,6 +239,7 @@ class OCRPanel(QWidget):
         self.setFixedWidth(280)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         title = QLabel("📖 OCR / Text")
         title.setFont(QFont("", 11, QFont.Weight.Bold))
@@ -256,9 +259,14 @@ class OCRPanel(QWidget):
                 font-size: 18px;
             }
         """)
+        # Custom context menu
+        self.text_box.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.text_box.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.text_box, stretch=1)
 
+        # ── Action buttons ──
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
         self.copy_btn = QPushButton("Copy")
         self.copy_btn.clicked.connect(self._copy)
         self.clear_btn = QPushButton("Clear")
@@ -267,9 +275,41 @@ class OCRPanel(QWidget):
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
 
+        # ── Jisho button ──
+        self.jisho_btn = QPushButton("🔍  Search Jisho")
+        self.jisho_btn.setToolTip(
+            "Search selected text on Jisho.org\n(uses all text if nothing is selected)"
+        )
+        self.jisho_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a6496;
+                color: #fff;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #3a7abf; }
+            QPushButton:pressed { background: #1e4f75; }
+        """)
+        self.jisho_btn.clicked.connect(self._search_jisho)
+        layout.addWidget(self.jisho_btn)
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+
+    # ── Helpers ──
+
+    def _selected_or_all(self) -> str:
+        """Return highlighted text, falling back to the full box contents."""
+        cursor = self.text_box.textCursor()
+        text = cursor.selectedText().strip()
+        if not text:
+            text = self.text_box.toPlainText().strip()
+        return text
+
+    # ── Slots ──
 
     def set_text(self, text: str):
         current = self.text_box.toPlainText()
@@ -285,6 +325,25 @@ class OCRPanel(QWidget):
     def _copy(self):
         QGuiApplication.clipboard().setText(self.text_box.toPlainText())
         self.status.setText("Copied!")
+
+    def _search_jisho(self):
+        text = self._selected_or_all()
+        if not text:
+            self.status.setText("Nothing to search.")
+            return
+        url = "https://jisho.org/search/" + url_quote(text)
+        webbrowser.open(url)
+        self.status.setText("Opened in browser ↗")
+
+    def _show_context_menu(self, pos):
+        menu = self.text_box.createStandardContextMenu()
+        menu.addSeparator()
+        jisho_act = QAction("🔍  Search Jisho", self)
+        jisho_act.triggered.connect(self._search_jisho)
+        # grey out if no text at all
+        jisho_act.setEnabled(bool(self.text_box.toPlainText().strip()))
+        menu.addAction(jisho_act)
+        menu.exec(self.text_box.viewport().mapToGlobal(pos))
 
 
 # ─── Thumbnail Strip ─────────────────────────────────────────────────────────
