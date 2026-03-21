@@ -17,13 +17,13 @@ from urllib.parse import quote as url_quote
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QScrollArea,
-    QTextEdit, QSpinBox, QListWidget,
+    QTextEdit, QListWidget,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
-    QSettings, QTimer, QEvent
+    QSettings, QTimer
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QAction, QFont, QColor,
@@ -37,6 +37,23 @@ from PyQt6.QtGui import (
 # (Windows Aero Snap / WM_NCHITTEST hook removed — Python 3.14 changed the
 #  ctypes MSG pointer ABI in PyQt6's nativeEvent, causing a hard crash on show.
 #  Resize is handled via Qt mouse events on all platforms instead.)
+
+
+# ─── Icon helper ─────────────────────────────────────────────────────────────
+
+def load_icon(name: str) -> "QIcon":
+    """
+    Load an icon from the icons/ folder next to this script.
+    Falls back to an empty QIcon if the file is missing, so the app
+    always runs even without the icon set.
+
+    Expected location:  icons/<name>.png
+    Example:            icons/open.png
+    """
+    path = Path(__file__).parent / "icons" / f"{name}.png"
+    if path.exists():
+        return QIcon(str(path))
+    return QIcon()
 
 
 # ─── OCR Process Manager ─────────────────────────────────────────────────────
@@ -209,118 +226,6 @@ class OCRWorker(QThread):
             self.error_occurred.emit(traceback.format_exc())
 
 
-# ─── Custom Title Bar ─────────────────────────────────────────────────────────
-
-class TitleBar(QWidget):
-    """
-    Custom frameless title bar: icon, title text, and
-    min / max / close buttons.  Double-click toggles maximise.
-    Drag moves the window; dragging off a maximised window un-maximises it.
-    """
-
-    def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self.setFixedHeight(36)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setObjectName("TitleBar")
-
-        self._drag_pos: QPoint | None = None
-        self._window = parent
-
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 4, 0)
-        lay.setSpacing(0)
-
-        # App icon
-        icon_lbl = QLabel("🐙")
-        icon_lbl.setFixedWidth(26)
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(icon_lbl)
-        lay.addSpacing(4)
-
-        # Title
-        self._title_lbl = QLabel("Tako Reader — タコReader")
-        self._title_lbl.setObjectName("TitleLabel")
-        self._title_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-        )
-        lay.addWidget(self._title_lbl, stretch=1)
-
-        # Window control buttons
-        for attr, text, hover_bg, slot in [
-            ("min_btn", "─",  "#3a3a4a", self._on_min),
-            ("max_btn", "□",  "#3a3a4a", self._on_max),
-            ("clo_btn", "✕",  "#c0392b", self._on_close),
-        ]:
-            btn = QPushButton(text)
-            btn.setFixedSize(40, 36)
-            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: #bbbbbb;
-                    border: none;
-                    font-size: 14px;
-                }}
-                QPushButton:hover {{
-                    background: {hover_bg};
-                    color: #ffffff;
-                }}
-            """)
-            btn.clicked.connect(slot)
-            lay.addWidget(btn)
-            setattr(self, attr, btn)
-
-    # ── Actions ──
-
-    def _on_min(self):   self._window.showMinimized()
-    def _on_close(self): self._window.close()
-
-    def _on_max(self):
-        if self._window.isMaximized():
-            self._window.showNormal()
-        else:
-            self._window.showMaximized()
-
-    def update_max_icon(self):
-        self.max_btn.setText("❐" if self._window.isMaximized() else "□")
-
-    def set_title(self, text: str):
-        self._title_lbl.setText(text)
-
-    # ── Drag to move ──
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag_pos is not None:
-            if self._window.isMaximized():
-                # Un-maximise, keeping cursor proportional to new width
-                ratio = event.globalPosition().toPoint().x() / self._window.width()
-                self._window.showNormal()
-                new_x = int(event.globalPosition().toPoint().x()
-                            - self._window.width() * ratio)
-                self._window.move(new_x, 0)
-                self._drag_pos = event.globalPosition().toPoint()
-            else:
-                delta = event.globalPosition().toPoint() - self._drag_pos
-                self._window.move(self._window.pos() + delta)
-                self._drag_pos = event.globalPosition().toPoint()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._drag_pos = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._on_max()
-        super().mouseDoubleClickEvent(event)
-
-
 # ─── Page View ───────────────────────────────────────────────────────────────
 
 class PageView(QLabel):
@@ -376,7 +281,13 @@ class PageView(QLabel):
         if not self._pixmap_orig:
             return
         pw, ph = self._pixmap_orig.width(), self._pixmap_orig.height()
-        vw, vh = self.width(), self.height()
+        # Measure the viewport, not self — self resizes to fit the zoomed image
+        sa = self._scroll_area()
+        if sa:
+            vw = sa.viewport().width()
+            vh = sa.viewport().height()
+        else:
+            vw, vh = self.width(), self.height()
         if self._fit_mode == "fit_width":
             self._scale = vw / pw if pw else 1.0
         elif self._fit_mode == "fit_page":
@@ -388,16 +299,29 @@ class PageView(QLabel):
             return
         w = int(self._pixmap_orig.width()  * self._scale)
         h = int(self._pixmap_orig.height() * self._scale)
-        self.setPixmap(self._pixmap_orig.scaled(
+        scaled = self._pixmap_orig.scaled(
             w, h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
-        ))
+        )
+        self.setPixmap(scaled)
+        # Resize so the scroll area has real range at high zoom,
+        # but never shrink below the viewport size (keeps image centred at low zoom)
+        sa = self._scroll_area()
+        if sa:
+            vw = sa.viewport().width()
+            vh = sa.viewport().height()
+            self.setFixedSize(max(scaled.width(), vw), max(scaled.height(), vh))
+        else:
+            self.setFixedSize(scaled.width(), scaled.height())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Re-render on resize so widget size stays in sync with viewport
         if self._fit_mode != "custom":
             self._apply_fit()
+        else:
+            self._render()
 
     def _scroll_area(self):
         p = self.parent()
@@ -774,12 +698,6 @@ class TakoReader(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Frameless — we draw our own title bar and handle resize
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Window
-        )
-
         self.setWindowTitle("Tako Reader — タコReader")
         self.resize(1280, 900)
         self.setMinimumSize(640, 480)
@@ -789,13 +707,6 @@ class TakoReader(QMainWindow):
         self._ocr_worker: OCRWorker | None = None
         self._settings                     = QSettings("TakoReader", "TakoReaderJP")
         self._reading_mode                 = "rtl"
-
-        # Manual resize state (used on non-Windows)
-        self._resizing       = False
-        self._resize_dir     = QPoint()
-        self._resize_origin: QPoint | None = None
-        self._resize_geo:    QRect  | None = None
-        self._EDGE           = 6
 
         self._build_ui()
         self._build_menu()
@@ -809,25 +720,19 @@ class TakoReader(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        outer = QWidget()
-        outer.setObjectName("OuterContainer")
-        self.setCentralWidget(outer)
-
-        outer_lay = QVBoxLayout(outer)
-        outer_lay.setContentsMargins(0, 0, 0, 0)
-        outer_lay.setSpacing(0)
-
-        # Title bar
-        self.title_bar = TitleBar(self)
-        outer_lay.addWidget(self.title_bar)
-
-        # Menu bar
-        self.main_menu = QMenuBar()
+        # Use native QMainWindow menu bar
+        self.main_menu = self.menuBar()
         self.main_menu.setObjectName("MainMenuBar")
-        outer_lay.addWidget(self.main_menu)
+
+        # Central widget holds toolbar placeholder + content
+        central = QWidget()
+        self.setCentralWidget(central)
+        central_lay = QVBoxLayout(central)
+        central_lay.setContentsMargins(0, 0, 0, 0)
+        central_lay.setSpacing(0)
 
         # Toolbar widget is inserted here by _build_toolbar (called from __init__)
-        self._outer_lay = outer_lay
+        self._outer_lay = central_lay
 
         # Content area
         content     = QWidget()
@@ -845,7 +750,7 @@ class TakoReader(QMainWindow):
         center_lay.setSpacing(0)
 
         self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll.setStyleSheet("QScrollArea { border: none; background: #1a1a1a; }")
 
@@ -861,7 +766,7 @@ class TakoReader(QMainWindow):
         self.ocr_panel = OCRPanel()
         content_lay.addWidget(self.ocr_panel)
 
-        outer_lay.addWidget(content, stretch=1)
+        central_lay.addWidget(content, stretch=1)
         self.statusBar().showMessage("Open a file to begin (File → Open)  🐙")
 
     def _build_nav_bar(self) -> QWidget:
@@ -871,44 +776,41 @@ class TakoReader(QMainWindow):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(12, 4, 12, 4)
 
-        self.btn_first = QPushButton("⏮")
-        self.btn_prev  = QPushButton("◀  Prev")
-        self.btn_next  = QPushButton("Next  ▶")
-        self.btn_last  = QPushButton("⏭")
+        nav_btn_style = """
+            QPushButton {
+                background: #2a2a2a; color: #ddd;
+                border-radius: 6px; padding: 0 14px; font-size: 10pt;
+            }
+            QPushButton:hover    { background: #3584e4; }
+            QPushButton:disabled { color: #555; }
+        """
 
-        for b in (self.btn_first, self.btn_prev, self.btn_next, self.btn_last):
+        def _nav_btn(label, slot, icon_name=None):
+            b = QPushButton()
             b.setFixedHeight(32)
-            b.setStyleSheet("""
-                QPushButton {
-                    background: #2a2a2a; color: #ddd;
-                    border-radius: 6px; padding: 0 14px; font-size: 10pt;
-                }
-                QPushButton:hover    { background: #3584e4; }
-                QPushButton:disabled { color: #555; }
-            """)
+            b.setStyleSheet(nav_btn_style)
+            b.clicked.connect(slot)
+            ic = load_icon(icon_name) if icon_name else QIcon()
+            if not ic.isNull():
+                b.setIcon(ic)
+                b.setIconSize(QSize(16, 16))
+            else:
+                b.setText(label)
+            return b
 
-        self.btn_first.clicked.connect(lambda: self.go_to_page(0))
-        self.btn_prev.clicked.connect(self.prev_page)
-        self.btn_next.clicked.connect(self.next_page)
-        self.btn_last.clicked.connect(lambda: self.go_to_page(len(self._pages) - 1))
+        self.btn_first = _nav_btn("⏮", lambda: self.go_to_page(0),             "nav-first")
+        self.btn_prev  = _nav_btn("◀  Prev", self.prev_page,                    "nav-prev")
+        self.btn_next  = _nav_btn("Next  ▶", self.next_page,                    "nav-next")
+        self.btn_last  = _nav_btn("⏭", lambda: self.go_to_page(len(self._pages) - 1), "nav-last")
 
         self.page_label = QLabel("— / —")
         self.page_label.setStyleSheet("color: #aaa; font-size: 10pt;")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_label.setFixedWidth(90)
-
-        self.page_spin = QSpinBox()
-        self.page_spin.setFixedWidth(60)
-        self.page_spin.setStyleSheet("""
-            QSpinBox { background: #2a2a2a; color: #ddd;
-                       border: 1px solid #444; border-radius: 4px; padding: 2px 4px; }
-        """)
-        self.page_spin.valueChanged.connect(lambda v: self.go_to_page(v - 1))
+        self.page_label.setMinimumWidth(80)
 
         lay.addWidget(self.btn_first)
         lay.addWidget(self.btn_prev)
         lay.addStretch()
-        lay.addWidget(self.page_spin)
         lay.addWidget(self.page_label)
         lay.addStretch()
         lay.addWidget(self.btn_next)
@@ -939,10 +841,12 @@ class TakoReader(QMainWindow):
         zoom_out  = QAction("Zoom Out",  self, shortcut="Ctrl+-")
         zoom_out.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale / 1.2))
 
-        self.act_thumbnails = QAction("Show Thumbnails", self, checkable=True, checked=True)
-        self.act_thumbnails.triggered.connect(lambda v: self.thumb_list.setVisible(v))
-        self.act_ocr_panel  = QAction("Show OCR Panel",  self, checkable=True, checked=True)
-        self.act_ocr_panel.triggered.connect(lambda v: self.ocr_panel.setVisible(v))
+        self.act_thumbnails = QAction("Show Thumbnails", self, checkable=True, checked=True,
+                                       shortcut="Ctrl+Shift+T")
+        self.act_thumbnails.triggered.connect(self._toggle_thumbnails)
+        self.act_ocr_panel  = QAction("Show OCR Panel",  self, checkable=True, checked=True,
+                                       shortcut="Ctrl+Shift+P")
+        self.act_ocr_panel.triggered.connect(self._toggle_ocr_panel)
 
         rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
         rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
@@ -983,17 +887,27 @@ class TakoReader(QMainWindow):
             QPushButton {
                 background: transparent; color: #ccc;
                 border: none; border-radius: 4px;
-                padding: 4px 10px; font-size: 10pt;
+                padding: 4px 8px; font-size: 10pt;
             }
             QPushButton:hover   { background: #2e2e2e; color: #fff; }
             QPushButton:checked { background: #3584e4; color: #fff; }
         """
 
-        def _btn(label, slot, checkable=False):
-            b = QPushButton(label)
+        def _btn(label, slot, checkable=False, icon_name=None, tooltip=None):
+            b = QPushButton()
             b.setCheckable(checkable)
             b.setStyleSheet(btn_style)
             b.clicked.connect(slot)
+            ic = load_icon(icon_name) if icon_name else QIcon()
+            if not ic.isNull():
+                b.setIcon(ic)
+                b.setIconSize(QSize(16, 16))
+                if tooltip:
+                    b.setToolTip(tooltip)
+            else:
+                b.setText(label)
+                if tooltip:
+                    b.setToolTip(tooltip)
             return b
 
         def _sep():
@@ -1003,99 +917,47 @@ class TakoReader(QMainWindow):
             f.setFixedWidth(10)
             return f
 
-        lay.addWidget(_btn("📂 Open",     self.open_file))
-        lay.addWidget(_sep())
-        lay.addWidget(_btn("↔ Fit Width", lambda: self.page_view.set_fit_mode("fit_width")))
-        lay.addWidget(_btn("⬜ Fit Page", lambda: self.page_view.set_fit_mode("fit_page")))
-        lay.addWidget(_sep())
-        lay.addWidget(_btn("🔍+", lambda: self.page_view.set_scale(self.page_view._scale * 1.2)))
-        lay.addWidget(_btn("🔍−", lambda: self.page_view.set_scale(self.page_view._scale / 1.2)))
+        # ── Left side: thumbnails toggle ──
+        self.tb_thumb_btn = _btn("‹‹", self._toggle_thumbnails, checkable=True,
+                                 icon_name="panel-thumbnails",
+                                 tooltip="Toggle Thumbnails (Ctrl+Shift+T)")
+        self.tb_thumb_btn.setChecked(True)
+        lay.addWidget(self.tb_thumb_btn)
         lay.addWidget(_sep())
 
-        self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True)
+        # ── Centre tools ──
+        lay.addWidget(_btn("📂 Open", self.open_file,
+                           icon_name="open", tooltip="Open file (Ctrl+O)"))
+        lay.addWidget(_sep())
+        lay.addWidget(_btn("↔ Fit Width",
+                           lambda: self.page_view.set_fit_mode("fit_width"),
+                           icon_name="fit-width", tooltip="Fit Width (W)"))
+        lay.addWidget(_btn("⬜ Fit Page",
+                           lambda: self.page_view.set_fit_mode("fit_page"),
+                           icon_name="fit-page", tooltip="Fit Page (F)"))
+        lay.addWidget(_sep())
+        lay.addWidget(_btn("🔍+",
+                           lambda: self.page_view.set_scale(self.page_view._scale * 1.2),
+                           icon_name="zoom-in", tooltip="Zoom In (Ctrl+=)"))
+        lay.addWidget(_btn("🔍−",
+                           lambda: self.page_view.set_scale(self.page_view._scale / 1.2),
+                           icon_name="zoom-out", tooltip="Zoom Out (Ctrl+-)"))
+        lay.addWidget(_sep())
+        self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
+                            icon_name="ocr", tooltip="OCR Selection Mode (Ctrl+Shift+O)")
         lay.addWidget(self.ocr_btn)
+
+        # ── Right side: OCR panel toggle ──
         lay.addStretch()
+        lay.addWidget(_sep())
+        self.tb_ocr_btn = _btn("››", self._toggle_ocr_panel, checkable=True,
+                               icon_name="panel-ocr",
+                               tooltip="Toggle OCR Panel (Ctrl+Shift+P)")
+        self.tb_ocr_btn.setChecked(True)
+        lay.addWidget(self.tb_ocr_btn)
 
-        # Insert after menu bar (index 2: title_bar=0, menu=1, toolbar=2)
-        self._outer_lay.insertWidget(2, bar)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Frameless resize
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # nativeEvent intentionally omitted — ctypes MSG pointer handling changed
-    # in Python 3.14 and causes a hard crash on show(). Resize is handled
-    # entirely via Qt mouse events on all platforms (see mousePressEvent etc.)
-
-    # ── Mac / Linux: manual edge-resize via Qt mouse events ──────────────────
-
-    def _hit_edges(self, pos: QPoint) -> QPoint:
-        """Return (dx, dy) where -1/+1 indicates which edge is hit, 0 = none."""
-        E = self._EDGE
-        w, h = self.width(), self.height()
-        return QPoint(
-            -1 if pos.x() < E else (1 if pos.x() > w - E else 0),
-            -1 if pos.y() < E else (1 if pos.y() > h - E else 0),
-        )
-
-    def _edge_cursor(self, d: QPoint) -> Qt.CursorShape:
-        dx, dy = d.x(), d.y()
-        if   dx and dy and dx == dy: return Qt.CursorShape.SizeFDiagCursor
-        elif dx and dy:              return Qt.CursorShape.SizeBDiagCursor
-        elif dx:                     return Qt.CursorShape.SizeHorCursor
-        elif dy:                     return Qt.CursorShape.SizeVerCursor
-        return Qt.CursorShape.ArrowCursor
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            d = self._hit_edges(event.pos())
-            if d.x() or d.y():
-                self._resizing      = True
-                self._resize_dir    = d
-                self._resize_origin = event.globalPosition().toPoint()
-                self._resize_geo    = self.geometry()
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._resizing and self._resize_origin and self._resize_geo:
-            delta  = event.globalPosition().toPoint() - self._resize_origin
-            geo    = QRect(self._resize_geo)
-            dx, dy = self._resize_dir.x(), self._resize_dir.y()
-            if dx == -1:  geo.setLeft(geo.left()    + delta.x())
-            elif dx == 1: geo.setRight(geo.right()  + delta.x())
-            if dy == -1:  geo.setTop(geo.top()      + delta.y())
-            elif dy == 1: geo.setBottom(geo.bottom()+ delta.y())
-            if geo.width() >= self.minimumWidth() and geo.height() >= self.minimumHeight():
-                self.setGeometry(geo)
-            event.accept()
-            return
-        d = self._hit_edges(event.pos())
-        if d.x() or d.y():
-            self.setCursor(self._edge_cursor(d))
-        else:
-            self.unsetCursor()  # let child widgets control their own cursors
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._resizing:
-            self._resizing      = False
-            self._resize_origin = None
-            self._resize_geo    = None
-            self.unsetCursor()  # restore child widget cursor control
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Window state change — keep max/restore icon in sync
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            self.title_bar.update_max_icon()
+        # Insert at top of central layout (index 0), above content area
+        self._outer_lay.insertWidget(0, bar)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Drag & drop
@@ -1159,12 +1021,9 @@ class TakoReader(QMainWindow):
         self._current = 0
         self._settings.setValue("last_dir", str(Path(path).parent))
 
-        title = f"Tako Reader — {Path(path).name}"
-        self.setWindowTitle(title)
-        self.title_bar.set_title(title)
+        self.setWindowTitle(f"Tako Reader — {Path(path).name}")
 
         self.thumb_list.load_pages(pages)
-        self.page_spin.setRange(1, len(pages))
         self.go_to_page(0)
         self.statusBar().showMessage(f"Loaded {len(pages)} pages — {Path(path).name}")
 
@@ -1180,9 +1039,6 @@ class TakoReader(QMainWindow):
         self.page_view.set_pixmap(self._pages[index])
         self.thumb_list.select_page(index)
         self.page_label.setText(f"{index+1} / {len(self._pages)}")
-        self.page_spin.blockSignals(True)
-        self.page_spin.setValue(index + 1)
-        self.page_spin.blockSignals(False)
         self.btn_prev.setEnabled(index > 0)
         self.btn_next.setEnabled(index < len(self._pages) - 1)
         self.btn_first.setEnabled(index > 0)
@@ -1193,6 +1049,20 @@ class TakoReader(QMainWindow):
 
     def next_page(self):
         self.go_to_page(self._current + (-1 if self._reading_mode == "rtl" else 1))
+
+    def _toggle_thumbnails(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self.thumb_list.isVisible()
+        self.thumb_list.setVisible(checked)
+        self.act_thumbnails.setChecked(checked)
+        self.tb_thumb_btn.setChecked(checked)
+
+    def _toggle_ocr_panel(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self.ocr_panel.isVisible()
+        self.ocr_panel.setVisible(checked)
+        self.act_ocr_panel.setChecked(checked)
+        self.tb_ocr_btn.setChecked(checked)
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
@@ -1278,19 +1148,9 @@ class TakoReader(QMainWindow):
         self.setStyleSheet("""
             QMainWindow, QWidget          { background: #1a1a1a; color: #e0e0e0; }
 
-            #OuterContainer               { background: #1a1a1a;
-                                            border: 1px solid #3a3a3a;
-                                            border-radius: 8px; }
-
-            #TitleBar                     { background: #1e1e1e;
-                                            border-bottom: 1px solid #2a2a2a;
-                                            border-top-left-radius: 8px;
-                                            border-top-right-radius: 8px; }
-            #TitleLabel                   { color: #cccccc; font-size: 10pt; }
-
-            #MainMenuBar                  { background: #1a1a1a; color: #ddd;
+            QMenuBar                      { background: #1a1a1a; color: #ddd;
                                             border-bottom: 1px solid #2a2a2a; }
-            #MainMenuBar::item:selected   { background: #3584e4; }
+            QMenuBar::item:selected       { background: #3584e4; }
 
             QMenu                         { background: #252525; color: #ddd;
                                             border: 1px solid #3a3a3a; }
