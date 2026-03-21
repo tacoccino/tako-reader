@@ -10,73 +10,200 @@ import zipfile
 import json
 import subprocess
 import webbrowser
+import platform
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QScrollArea, QSlider,
-    QStatusBar, QMenuBar, QMenu, QToolBar, QSplitter,
-    QTextEdit, QFrame, QComboBox, QSpinBox, QDialog,
-    QDialogButtonBox, QCheckBox, QGroupBox, QListWidget,
+    QPushButton, QLabel, QFileDialog, QScrollArea,
+    QTextEdit, QSpinBox, QListWidget,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
-    QProgressDialog, QLineEdit
+    QProgressDialog, QMenuBar, QMenu
 )
 from PyQt6.QtCore import (
-    Qt, QSize, QRect, QPoint, QThread, pyqtSignal, QTimer,
-    QSettings, QRectF, QPointF
+    Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
+    QSettings, QTimer, QEvent
 )
 from PyQt6.QtGui import (
-    QPixmap, QImage, QKeySequence, QAction, QFont, QColor,
-    QPainter, QPen, QBrush, QCursor, QIcon, QPalette, QGuiApplication
+    QPixmap, QImage, QAction, QFont, QColor,
+    QCursor, QIcon, QGuiApplication, QPainter, QBrush, QPen
 )
 
+# platform checks available if needed:
+# IS_WINDOWS = platform.system() == "Windows"
+# IS_MAC     = platform.system() == "Darwin"
 
-# ─── OCR Worker Thread ──────────────────────────────────────────────────────
+# (Windows Aero Snap / WM_NCHITTEST hook removed — Python 3.14 changed the
+#  ctypes MSG pointer ABI in PyQt6's nativeEvent, causing a hard crash on show.
+#  Resize is handled via Qt mouse events on all platforms instead.)
+
+
+# ─── OCR Worker Thread ───────────────────────────────────────────────────────
 
 class OCRWorker(QThread):
-    result_ready = pyqtSignal(str)
+    result_ready   = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, image: QImage, rect: QRect):
+    _models: dict = {}   # cache keyed by device string
+
+    def __init__(self, image: QImage, rect: QRect, device: str = "cpu"):
         super().__init__()
-        self.image = image
-        self.rect = rect
+        self.image  = image
+        self.rect   = rect
+        self.device = device   # "cpu" | "cuda"
 
     def run(self):
         try:
             import manga_ocr
-        except ImportError:
-            self.error_occurred.emit("manga-ocr not installed.\nRun: pip install manga-ocr")
+        except (ImportError, OSError) as e:
+            self.error_occurred.emit(
+                f"Failed to load manga-ocr / torch:\n{e}\n\n"
+                "If you see a DLL error, reinstall PyTorch (CPU build):\n"
+                "  pip uninstall torch -y && pip cache purge\n"
+                "  pip install torch --index-url https://download.pytorch.org/whl/cpu"
+            )
             return
-
         try:
             from PIL import Image as PILImage
             import numpy as np
 
-            # Crop to selection
             cropped = self.image.copy(self.rect)
-            w, h = cropped.width(), cropped.height()
-            ptr = cropped.bits()
+            w, h    = cropped.width(), cropped.height()
+            ptr     = cropped.bits()
             ptr.setsize(h * w * 4)
-            arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
-            pil_img = PILImage.fromarray(arr[:, :, :3])  # drop alpha
+            arr     = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+            pil_img = PILImage.fromarray(arr[:, :, :3])
 
-            # Run OCR (model loads once, cached globally)
-            if not hasattr(OCRWorker, '_model'):
-                OCRWorker._model = manga_ocr.MangaOcr()
-            text = OCRWorker._model(pil_img)
+            # Load (or reuse) model for this device
+            if self.device not in OCRWorker._models:
+                OCRWorker._models[self.device] = manga_ocr.MangaOcr(
+                    force_cpu=(self.device == "cpu")
+                )
+            text = OCRWorker._models[self.device](pil_img)
             self.result_ready.emit(text)
         except Exception as e:
             self.error_occurred.emit(str(e))
 
 
-# ─── Page View ──────────────────────────────────────────────────────────────
+# ─── Custom Title Bar ─────────────────────────────────────────────────────────
+
+class TitleBar(QWidget):
+    """
+    Custom frameless title bar: icon, title text, and
+    min / max / close buttons.  Double-click toggles maximise.
+    Drag moves the window; dragging off a maximised window un-maximises it.
+    """
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("TitleBar")
+
+        self._drag_pos: QPoint | None = None
+        self._window = parent
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 4, 0)
+        lay.setSpacing(0)
+
+        # App icon
+        icon_lbl = QLabel("🐙")
+        icon_lbl.setFixedWidth(26)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(icon_lbl)
+        lay.addSpacing(4)
+
+        # Title
+        self._title_lbl = QLabel("Tako Reader — タコReader")
+        self._title_lbl.setObjectName("TitleLabel")
+        self._title_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
+        lay.addWidget(self._title_lbl, stretch=1)
+
+        # Window control buttons
+        for attr, text, hover_bg, slot in [
+            ("min_btn", "─",  "#3a3a4a", self._on_min),
+            ("max_btn", "□",  "#3a3a4a", self._on_max),
+            ("clo_btn", "✕",  "#c0392b", self._on_close),
+        ]:
+            btn = QPushButton(text)
+            btn.setFixedSize(40, 36)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: #bbbbbb;
+                    border: none;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background: {hover_bg};
+                    color: #ffffff;
+                }}
+            """)
+            btn.clicked.connect(slot)
+            lay.addWidget(btn)
+            setattr(self, attr, btn)
+
+    # ── Actions ──
+
+    def _on_min(self):   self._window.showMinimized()
+    def _on_close(self): self._window.close()
+
+    def _on_max(self):
+        if self._window.isMaximized():
+            self._window.showNormal()
+        else:
+            self._window.showMaximized()
+
+    def update_max_icon(self):
+        self.max_btn.setText("❐" if self._window.isMaximized() else "□")
+
+    def set_title(self, text: str):
+        self._title_lbl.setText(text)
+
+    # ── Drag to move ──
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None:
+            if self._window.isMaximized():
+                # Un-maximise, keeping cursor proportional to new width
+                ratio = event.globalPosition().toPoint().x() / self._window.width()
+                self._window.showNormal()
+                new_x = int(event.globalPosition().toPoint().x()
+                            - self._window.width() * ratio)
+                self._window.move(new_x, 0)
+                self._drag_pos = event.globalPosition().toPoint()
+            else:
+                delta = event.globalPosition().toPoint() - self._drag_pos
+                self._window.move(self._window.pos() + delta)
+                self._drag_pos = event.globalPosition().toPoint()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._on_max()
+        super().mouseDoubleClickEvent(event)
+
+
+# ─── Page View ───────────────────────────────────────────────────────────────
 
 class PageView(QLabel):
-    """Displays a single manga page with zoom, pan, and OCR selection."""
+    """Single manga page: zoom, Shift+drag pan, OCR rubber-band selection."""
 
-    ocr_requested = pyqtSignal(QImage, QRect)  # full page image + selection rect
+    ocr_requested = pyqtSignal(QImage, QRect)
 
     def __init__(self):
         super().__init__()
@@ -84,30 +211,25 @@ class PageView(QLabel):
         self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet("background-color: #1a1a1a;")
-        self.setCursor(Qt.CursorShape.CrossCursor)
 
         self._pixmap_orig: QPixmap | None = None
-        self._scale = 1.0
-        self._fit_mode = "fit_width"  # fit_width | fit_page | custom
+        self._scale    = 1.0
+        self._fit_mode = "fit_width"
         self._ocr_mode = False
 
-        # Rubber-band selection (OCR)
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
-        self._sel_origin = QPoint()
+        self._sel_origin  = QPoint()
 
-        # Pan state (Shift + drag)
-        self._panning = False
-        self._pan_start: QPoint = QPoint()
-        self._scroll_start: QPoint = QPoint()  # scroll bar values at pan start
-
-    # ── Public API ──
+        self._panning      = False
+        self._pan_start    = QPoint()
+        self._scroll_start = QPoint()
 
     def set_pixmap(self, px: QPixmap):
         self._pixmap_orig = px
         self._apply_fit()
 
     def set_scale(self, scale: float):
-        self._scale = max(0.1, min(scale, 8.0))
+        self._scale    = max(0.1, min(scale, 8.0))
         self._fit_mode = "custom"
         self._render()
 
@@ -127,8 +249,6 @@ class PageView(QLabel):
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
-    # ── Internal ──
-
     def _apply_fit(self):
         if not self._pixmap_orig:
             return
@@ -143,24 +263,20 @@ class PageView(QLabel):
     def _render(self):
         if not self._pixmap_orig:
             return
-        w = int(self._pixmap_orig.width() * self._scale)
+        w = int(self._pixmap_orig.width()  * self._scale)
         h = int(self._pixmap_orig.height() * self._scale)
-        scaled = self._pixmap_orig.scaled(
+        self.setPixmap(self._pixmap_orig.scaled(
             w, h,
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.setPixmap(scaled)
+            Qt.TransformationMode.SmoothTransformation,
+        ))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._fit_mode != "custom":
             self._apply_fit()
 
-    # ── Mouse: pan (Shift+drag) and rubber-band OCR ──
-
     def _scroll_area(self):
-        """Walk up to the parent QScrollArea, if any."""
         p = self.parent()
         while p:
             if isinstance(p, QScrollArea):
@@ -170,16 +286,14 @@ class PageView(QLabel):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-            if shift:
-                # Start pan
-                self._panning = True
-                self._pan_start = event.globalPosition().toPoint()
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._panning      = True
+                self._pan_start    = event.globalPosition().toPoint()
                 sa = self._scroll_area()
                 if sa:
                     self._scroll_start = QPoint(
                         sa.horizontalScrollBar().value(),
-                        sa.verticalScrollBar().value()
+                        sa.verticalScrollBar().value(),
                     )
                 self._update_cursor()
                 event.accept()
@@ -217,21 +331,21 @@ class PageView(QLabel):
                 if sel.width() > 5 and sel.height() > 5 and self._pixmap_orig:
                     pm = self.pixmap()
                     if pm:
-                        offset_x = (self.width() - pm.width()) // 2
+                        offset_x = (self.width()  - pm.width())  // 2
                         offset_y = (self.height() - pm.height()) // 2
-                        img_x = int((sel.x() - offset_x) / self._scale)
-                        img_y = int((sel.y() - offset_y) / self._scale)
-                        img_w = int(sel.width() / self._scale)
-                        img_h = int(sel.height() / self._scale)
-                        img_rect = QRect(img_x, img_y, img_w, img_h).intersected(
+                        img_rect = QRect(
+                            int((sel.x() - offset_x) / self._scale),
+                            int((sel.y() - offset_y) / self._scale),
+                            int(sel.width()  / self._scale),
+                            int(sel.height() / self._scale),
+                        ).intersected(
                             QRect(0, 0, self._pixmap_orig.width(), self._pixmap_orig.height())
                         )
                         if img_rect.isValid():
-                            full_image = self._pixmap_orig.toImage()
-                            self.ocr_requested.emit(full_image, img_rect)
+                            self.ocr_requested.emit(self._pixmap_orig.toImage(), img_rect)
 
 
-# ─── OCR Sidebar ────────────────────────────────────────────────────────────
+# ─── OCR Sidebar ─────────────────────────────────────────────────────────────
 
 class OCRPanel(QWidget):
     def __init__(self):
@@ -259,15 +373,13 @@ class OCRPanel(QWidget):
                 font-size: 18px;
             }
         """)
-        # Custom context menu
         self.text_box.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.text_box.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.text_box, stretch=1)
 
-        # ── Action buttons ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        self.copy_btn = QPushButton("Copy")
+        self.copy_btn  = QPushButton("Copy")
         self.copy_btn.clicked.connect(self._copy)
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.clicked.connect(self.text_box.clear)
@@ -275,68 +387,142 @@ class OCRPanel(QWidget):
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
 
-        # ── Jisho button ──
         self.jisho_btn = QPushButton("🔍  Search Jisho")
         self.jisho_btn.setToolTip(
             "Search selected text on Jisho.org\n(uses all text if nothing is selected)"
         )
         self.jisho_btn.setStyleSheet("""
             QPushButton {
-                background: #2a6496;
-                color: #fff;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 10pt;
-                font-weight: bold;
+                background: #2a6496; color: #fff;
+                border-radius: 6px; padding: 6px 10px;
+                font-size: 10pt; font-weight: bold;
             }
-            QPushButton:hover { background: #3a7abf; }
+            QPushButton:hover   { background: #3a7abf; }
             QPushButton:pressed { background: #1e4f75; }
         """)
         self.jisho_btn.clicked.connect(self._search_jisho)
         layout.addWidget(self.jisho_btn)
 
-        # ── Takoboto button ──
         self.takoboto_btn = QPushButton("🐙  Search Takoboto")
         self.takoboto_btn.setToolTip(
             "Search selected text on Takoboto.jp\n(uses all text if nothing is selected)"
         )
         self.takoboto_btn.setStyleSheet("""
             QPushButton {
-                background: #3d6b4f;
-                color: #fff;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-size: 10pt;
-                font-weight: bold;
+                background: #3d6b4f; color: #fff;
+                border-radius: 6px; padding: 6px 10px;
+                font-size: 10pt; font-weight: bold;
             }
-            QPushButton:hover { background: #4e8a65; }
+            QPushButton:hover   { background: #4e8a65; }
             QPushButton:pressed { background: #2b4d38; }
         """)
         self.takoboto_btn.clicked.connect(self._search_takoboto)
         layout.addWidget(self.takoboto_btn)
 
+        # ── Device selector ──
+        device_row = QHBoxLayout()
+        device_row.setSpacing(6)
+        device_lbl = QLabel("OCR device:")
+        device_lbl.setStyleSheet("color: #888; font-size: 9pt;")
+        device_row.addWidget(device_lbl)
+
+        from PyQt6.QtWidgets import QComboBox
+        self.device_combo = QComboBox()
+        self.device_combo.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 2px 6px; font-size: 9pt;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background: #252525; color: #ddd;
+                selection-background-color: #3584e4;
+            }
+        """)
+        self._populate_devices()
+        device_row.addWidget(self.device_combo, stretch=1)
+
+        self.reload_model_btn = QPushButton("↺")
+        self.reload_model_btn.setFixedWidth(28)
+        self.reload_model_btn.setToolTip("Reload OCR model on selected device")
+        self.reload_model_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a; color: #aaa;
+                border: 1px solid #444; border-radius: 4px; font-size: 11pt;
+            }
+            QPushButton:hover { background: #3a3a3a; color: #fff; }
+        """)
+        self.reload_model_btn.clicked.connect(self._reload_model)
+        device_row.addWidget(self.reload_model_btn)
+        layout.addLayout(device_row)
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-    # ── Helpers ──
+    def _populate_devices(self):
+        """Fill the combo with CPU + any available CUDA devices.
+        Probes torch in a subprocess so a DLL crash can never kill the app."""
+        self.device_combo.clear()
+        self.device_combo.addItem("CPU", "cpu")
+
+        # Probe torch/CUDA in a subprocess — if torch DLLs are broken or
+        # CUDA isn't available the main process is completely unaffected.
+        try:
+            import subprocess, json as _json
+            probe = (
+                "import json, sys\n"
+                "try:\n"
+                "    import torch\n"
+                "    devices = []\n"
+                "    if torch.cuda.is_available():\n"
+                "        for i in range(torch.cuda.device_count()):\n"
+                "            devices.append({'id': i, 'name': torch.cuda.get_device_name(i)})\n"
+                "    print(json.dumps({'ok': True, 'devices': devices}))\n"
+                "except Exception as e:\n"
+                "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.stdout.strip():
+                data = _json.loads(result.stdout.strip().splitlines()[-1])
+                if data.get("ok"):
+                    for dev in data.get("devices", []):
+                        self.device_combo.addItem(
+                            f"CUDA:{dev['id']}  {dev['name']}", f"cuda:{dev['id']}"
+                        )
+                    if not data.get("devices"):
+                        self.device_combo.addItem(
+                            "CUDA (unavailable — CPU-only torch or driver issue)", "cpu"
+                        )
+                else:
+                    self.device_combo.addItem(
+                        f"CUDA (torch error: {data.get('error', '?')[:40]})", "cpu"
+                    )
+        except Exception as e:
+            self.device_combo.addItem(f"CUDA (probe failed: {str(e)[:40]})", "cpu")
+
+    def selected_device(self) -> str:
+        """Return the currently selected device string e.g. 'cpu' or 'cuda:0'."""
+        return self.device_combo.currentData() or "cpu"
+
+    def _reload_model(self):
+        """Clear cached model for current device so it reloads on next OCR."""
+        dev = self.selected_device()
+        if dev in OCRWorker._models:
+            del OCRWorker._models[dev]
+        self.status.setText(f"Model cache cleared for {dev} — will reload on next OCR")
 
     def _selected_or_all(self) -> str:
-        """Return highlighted text, falling back to the full box contents."""
-        cursor = self.text_box.textCursor()
-        text = cursor.selectedText().strip()
-        if not text:
-            text = self.text_box.toPlainText().strip()
-        return text
-
-    # ── Slots ──
+        text = self.text_box.textCursor().selectedText().strip()
+        return text or self.text_box.toPlainText().strip()
 
     def set_text(self, text: str):
         current = self.text_box.toPlainText()
-        if current:
-            self.text_box.setPlainText(current + "\n" + text)
-        else:
-            self.text_box.setPlainText(text)
+        self.text_box.setPlainText((current + "\n" + text) if current else text)
         self.status.setText("✓ OCR complete")
 
     def set_status(self, msg: str):
@@ -351,8 +537,7 @@ class OCRPanel(QWidget):
         if not text:
             self.status.setText("Nothing to search.")
             return
-        url = "https://jisho.org/search/" + url_quote(text)
-        webbrowser.open(url)
+        webbrowser.open("https://jisho.org/search/" + url_quote(text))
         self.status.setText("Opened in browser ↗")
 
     def _search_takoboto(self):
@@ -360,26 +545,25 @@ class OCRPanel(QWidget):
         if not text:
             self.status.setText("Nothing to search.")
             return
-        url = "https://takoboto.jp/?q=" + url_quote(text)
-        webbrowser.open(url)
+        webbrowser.open("https://takoboto.jp/?q=" + url_quote(text))
         self.status.setText("Opened in browser ↗")
 
     def _show_context_menu(self, pos):
-        menu = self.text_box.createStandardContextMenu()
-        menu.addSeparator()
+        menu     = self.text_box.createStandardContextMenu()
         has_text = bool(self.text_box.toPlainText().strip())
-        jisho_act = QAction("🔍  Search Jisho", self)
-        jisho_act.triggered.connect(self._search_jisho)
-        jisho_act.setEnabled(has_text)
-        menu.addAction(jisho_act)
-        takoboto_act = QAction("🐙  Search Takoboto", self)
-        takoboto_act.triggered.connect(self._search_takoboto)
-        takoboto_act.setEnabled(has_text)
-        menu.addAction(takoboto_act)
+        menu.addSeparator()
+        for label, slot in [
+            ("🔍  Search Jisho",    self._search_jisho),
+            ("🐙  Search Takoboto", self._search_takoboto),
+        ]:
+            act = QAction(label, self)
+            act.triggered.connect(slot)
+            act.setEnabled(has_text)
+            menu.addAction(act)
         menu.exec(self.text_box.viewport().mapToGlobal(pos))
 
 
-# ─── Thumbnail Strip ─────────────────────────────────────────────────────────
+# ─── Thumbnail Strip ──────────────────────────────────────────────────────────
 
 class ThumbnailList(QListWidget):
     page_selected = pyqtSignal(int)
@@ -401,61 +585,49 @@ class ThumbnailList(QListWidget):
         for i, px in enumerate(pixmaps):
             thumb = px.scaled(90, 120, Qt.AspectRatioMode.KeepAspectRatio,
                               Qt.TransformationMode.SmoothTransformation)
-            item = QListWidgetItem(QIcon(thumb), f"  {i+1}")
-            self.addItem(item)
+            self.addItem(QListWidgetItem(QIcon(thumb), f"  {i+1}"))
 
     def select_page(self, index: int):
         self.setCurrentRow(index)
 
 
-# ─── File Loader ─────────────────────────────────────────────────────────────
+# ─── File Loaders ─────────────────────────────────────────────────────────────
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".avif"}
 
 def load_pages_from_path(path: str) -> list[QPixmap]:
-    """Return ordered list of QPixmaps from CBZ, PDF, or image file."""
-    p = Path(path)
+    p   = Path(path)
     ext = p.suffix.lower()
-
-    if ext == ".cbz" or ext == ".zip":
-        return _load_cbz(path)
-    elif ext == ".pdf":
-        return _load_pdf(path)
+    if ext in (".cbz", ".zip"): return _load_cbz(path)
+    elif ext == ".pdf":         return _load_pdf(path)
     elif ext in IMAGE_EXTS:
         px = QPixmap(path)
         return [px] if not px.isNull() else []
-    else:
-        # Try as directory
-        if p.is_dir():
-            return _load_dir(path)
-        raise ValueError(f"Unsupported format: {ext}")
+    elif p.is_dir():            return _load_dir(path)
+    raise ValueError(f"Unsupported format: {ext}")
 
 def _load_cbz(path: str) -> list[QPixmap]:
     pages = []
     with zipfile.ZipFile(path, "r") as zf:
-        names = sorted([
-            n for n in zf.namelist()
-            if Path(n).suffix.lower() in IMAGE_EXTS and not n.startswith("__")
-        ])
+        names = sorted(n for n in zf.namelist()
+                       if Path(n).suffix.lower() in IMAGE_EXTS
+                       and not n.startswith("__"))
         for name in names:
-            data = zf.read(name)
             img = QImage()
-            img.loadFromData(data)
+            img.loadFromData(zf.read(name))
             if not img.isNull():
                 pages.append(QPixmap.fromImage(img))
     return pages
 
 def _load_pdf(path: str) -> list[QPixmap]:
     try:
-        import fitz  # PyMuPDF
+        import fitz
     except ImportError:
         raise ImportError("PyMuPDF not installed.\nRun: pip install pymupdf")
-
     pages = []
-    doc = fitz.open(path)
+    doc   = fitz.open(path)
     for page in doc:
-        mat = fitz.Matrix(2.0, 2.0)  # 2x scale → ~144 DPI
-        pix = page.get_pixmap(matrix=mat, alpha=False)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
         img = QImage(pix.samples, pix.width, pix.height,
                      pix.stride, QImage.Format.Format_RGB888)
         pages.append(QPixmap.fromImage(img.copy()))
@@ -464,14 +636,11 @@ def _load_pdf(path: str) -> list[QPixmap]:
 
 def _load_dir(path: str) -> list[QPixmap]:
     pages = []
-    files = sorted([
-        f for f in Path(path).iterdir()
-        if f.suffix.lower() in IMAGE_EXTS
-    ])
-    for f in files:
-        px = QPixmap(str(f))
-        if not px.isNull():
-            pages.append(px)
+    for f in sorted(Path(path).iterdir()):
+        if f.suffix.lower() in IMAGE_EXTS:
+            px = QPixmap(str(f))
+            if not px.isNull():
+                pages.append(px)
     return pages
 
 
@@ -480,43 +649,82 @@ def _load_dir(path: str) -> list[QPixmap]:
 class TakoReader(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        # Frameless — we draw our own title bar and handle resize
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Window
+        )
+
         self.setWindowTitle("Tako Reader — タコReader")
         self.resize(1280, 900)
+        self.setMinimumSize(640, 480)
 
-        self._pages: list[QPixmap] = []
-        self._current = 0
+        self._pages: list[QPixmap]         = []
+        self._current                      = 0
         self._ocr_worker: OCRWorker | None = None
-        self._settings = QSettings("TakoReader", "TakoReaderJP")
-        self._reading_mode = "rtl"  # rtl (manga) | ltr
+        self._settings                     = QSettings("TakoReader", "TakoReaderJP")
+        self._reading_mode                 = "rtl"
+
+        # Manual resize state (used on non-Windows)
+        self._resizing       = False
+        self._resize_dir     = QPoint()
+        self._resize_origin: QPoint | None = None
+        self._resize_geo:    QRect  | None = None
+        self._EDGE           = 6
 
         self._build_ui()
+        print("[tako] _build_ui OK")
         self._build_menu()
+        print("[tako] _build_menu OK")
         self._build_toolbar()
+        print("[tako] _build_toolbar OK")
         self._apply_dark_theme()
+        print("[tako] _apply_dark_theme OK")
         self._restore_settings()
+        print("[tako] _restore_settings OK")
         self.setAcceptDrops(True)
 
-    # ── UI Construction ──────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # UI construction
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        outer = QWidget()
+        outer.setObjectName("OuterContainer")
+        self.setCentralWidget(outer)
 
-        # Thumbnail strip (left)
+        outer_lay = QVBoxLayout(outer)
+        outer_lay.setContentsMargins(0, 0, 0, 0)
+        outer_lay.setSpacing(0)
+
+        # Title bar
+        self.title_bar = TitleBar(self)
+        outer_lay.addWidget(self.title_bar)
+
+        # Menu bar
+        self.main_menu = QMenuBar()
+        self.main_menu.setObjectName("MainMenuBar")
+        outer_lay.addWidget(self.main_menu)
+
+        # Toolbar widget is inserted here by _build_toolbar (called from __init__)
+        self._outer_lay = outer_lay
+
+        # Content area
+        content     = QWidget()
+        content_lay = QHBoxLayout(content)
+        content_lay.setContentsMargins(0, 0, 0, 0)
+        content_lay.setSpacing(0)
+
         self.thumb_list = ThumbnailList()
         self.thumb_list.page_selected.connect(self.go_to_page)
-        root.addWidget(self.thumb_list)
+        content_lay.addWidget(self.thumb_list)
 
-        # Center: page + nav
-        center_widget = QWidget()
-        center_layout = QVBoxLayout(center_widget)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.setSpacing(0)
+        center      = QWidget()
+        center_lay  = QVBoxLayout(center)
+        center_lay.setContentsMargins(0, 0, 0, 0)
+        center_lay.setSpacing(0)
 
-        # Scroll area for the page
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -525,18 +733,16 @@ class TakoReader(QMainWindow):
         self.page_view = PageView()
         self.page_view.ocr_requested.connect(self._run_ocr)
         self.scroll.setWidget(self.page_view)
-        center_layout.addWidget(self.scroll, stretch=1)
+        center_lay.addWidget(self.scroll, stretch=1)
 
-        # Bottom nav bar
         nav = self._build_nav_bar()
-        center_layout.addWidget(nav)
+        center_lay.addWidget(nav)
+        content_lay.addWidget(center, stretch=1)
 
-        root.addWidget(center_widget, stretch=1)
-
-        # OCR panel (right)
         self.ocr_panel = OCRPanel()
-        root.addWidget(self.ocr_panel)
+        content_lay.addWidget(self.ocr_panel)
 
+        outer_lay.addWidget(content, stretch=1)
         self.statusBar().showMessage("Open a file to begin (File → Open)  🐙")
 
     def _build_nav_bar(self) -> QWidget:
@@ -547,18 +753,18 @@ class TakoReader(QMainWindow):
         lay.setContentsMargins(12, 4, 12, 4)
 
         self.btn_first = QPushButton("⏮")
-        self.btn_prev = QPushButton("◀  Prev")
-        self.btn_next = QPushButton("Next  ▶")
-        self.btn_last = QPushButton("⏭")
+        self.btn_prev  = QPushButton("◀  Prev")
+        self.btn_next  = QPushButton("Next  ▶")
+        self.btn_last  = QPushButton("⏭")
 
         for b in (self.btn_first, self.btn_prev, self.btn_next, self.btn_last):
             b.setFixedHeight(32)
             b.setStyleSheet("""
                 QPushButton {
-                    background: #2a2a2a; color: #ddd; border-radius: 6px;
-                    padding: 0 14px; font-size: 10pt;
+                    background: #2a2a2a; color: #ddd;
+                    border-radius: 6px; padding: 0 14px; font-size: 10pt;
                 }
-                QPushButton:hover { background: #3584e4; }
+                QPushButton:hover    { background: #3584e4; }
                 QPushButton:disabled { color: #555; }
             """)
 
@@ -575,8 +781,8 @@ class TakoReader(QMainWindow):
         self.page_spin = QSpinBox()
         self.page_spin.setFixedWidth(60)
         self.page_spin.setStyleSheet("""
-            QSpinBox { background: #2a2a2a; color: #ddd; border: 1px solid #444;
-                       border-radius: 4px; padding: 2px 4px; }
+            QSpinBox { background: #2a2a2a; color: #ddd;
+                       border: 1px solid #444; border-radius: 4px; padding: 2px 4px; }
         """)
         self.page_spin.valueChanged.connect(lambda v: self.go_to_page(v - 1))
 
@@ -591,39 +797,33 @@ class TakoReader(QMainWindow):
         return bar
 
     def _build_menu(self):
-        mb = self.menuBar()
+        mb = self.main_menu
 
-        # File
         file_menu = mb.addMenu("File")
-        open_act = QAction("Open…", self, shortcut="Ctrl+O")
+        open_act  = QAction("Open…",        self, shortcut="Ctrl+O")
         open_act.triggered.connect(self.open_file)
-        open_dir_act = QAction("Open Folder…", self)
-        open_dir_act.triggered.connect(self.open_folder)
-        quit_act = QAction("Quit", self, shortcut="Ctrl+Q")
+        open_dir  = QAction("Open Folder…", self)
+        open_dir.triggered.connect(self.open_folder)
+        quit_act  = QAction("Quit",         self, shortcut="Ctrl+Q")
         quit_act.triggered.connect(self.close)
-        file_menu.addActions([open_act, open_dir_act])
+        file_menu.addActions([open_act, open_dir])
         file_menu.addSeparator()
         file_menu.addAction(quit_act)
 
-        # View
         view_menu = mb.addMenu("View")
-        fit_w = QAction("Fit Width", self, shortcut="W")
+        fit_w     = QAction("Fit Width",  self, shortcut="W")
         fit_w.triggered.connect(lambda: self.page_view.set_fit_mode("fit_width"))
-        fit_p = QAction("Fit Page", self, shortcut="F")
+        fit_p     = QAction("Fit Page",   self, shortcut="F")
         fit_p.triggered.connect(lambda: self.page_view.set_fit_mode("fit_page"))
-        zoom_in = QAction("Zoom In", self, shortcut="Ctrl+=")
+        zoom_in   = QAction("Zoom In",   self, shortcut="Ctrl+=")
         zoom_in.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale * 1.2))
-        zoom_out = QAction("Zoom Out", self, shortcut="Ctrl+-")
+        zoom_out  = QAction("Zoom Out",  self, shortcut="Ctrl+-")
         zoom_out.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale / 1.2))
 
         self.act_thumbnails = QAction("Show Thumbnails", self, checkable=True, checked=True)
-        self.act_thumbnails.triggered.connect(
-            lambda v: self.thumb_list.setVisible(v)
-        )
-        self.act_ocr_panel = QAction("Show OCR Panel", self, checkable=True, checked=True)
-        self.act_ocr_panel.triggered.connect(
-            lambda v: self.ocr_panel.setVisible(v)
-        )
+        self.act_thumbnails.triggered.connect(lambda v: self.thumb_list.setVisible(v))
+        self.act_ocr_panel  = QAction("Show OCR Panel",  self, checkable=True, checked=True)
+        self.act_ocr_panel.triggered.connect(lambda v: self.ocr_panel.setVisible(v))
 
         rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
         rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
@@ -634,69 +834,160 @@ class TakoReader(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(rtl_act)
 
-        # Navigate
         nav_menu = mb.addMenu("Navigate")
-        prev_a = QAction("Previous Page", self, shortcut="Left")
+        prev_a   = QAction("Previous Page", self, shortcut="Left")
         prev_a.triggered.connect(self.prev_page)
-        next_a = QAction("Next Page", self, shortcut="Right")
+        next_a   = QAction("Next Page",     self, shortcut="Right")
         next_a.triggered.connect(self.next_page)
         nav_menu.addActions([prev_a, next_a])
 
-        # OCR
         ocr_menu = mb.addMenu("OCR")
         self.act_ocr_mode = QAction("OCR Selection Mode", self,
-                                     shortcut="Ctrl+Shift+O", checkable=True)
+                                    shortcut="Ctrl+Shift+O", checkable=True)
         self.act_ocr_mode.triggered.connect(self._toggle_ocr_mode)
         ocr_menu.addAction(self.act_ocr_mode)
+        check_ocr = QAction("Check OCR Installation…", self)
+        check_ocr.triggered.connect(self._check_ocr)
+        ocr_menu.addAction(check_ocr)
 
-        install_ocr = QAction("Check OCR Installation…", self)
-        install_ocr.triggered.connect(self._check_ocr)
-        ocr_menu.addAction(install_ocr)
+    def _build_toolbar(self) -> QWidget:
+        """Returns a plain QWidget toolbar that slots into the outer VBox layout."""
+        from PyQt6.QtWidgets import QFrame
+        bar = QWidget()
+        bar.setObjectName("ToolBar")
+        bar.setFixedHeight(36)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(4, 0, 4, 0)
+        lay.setSpacing(2)
 
-    def _build_toolbar(self):
-        tb = self.addToolBar("Main")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(20, 20))
-        tb.setStyleSheet("""
-            QToolBar { background: #1e1e1e; border-bottom: 1px solid #2a2a2a; spacing: 4px; padding: 2px; }
-            QToolButton { background: transparent; color: #ccc; border-radius: 4px;
-                          padding: 4px 10px; font-size: 13pt; }
-            QToolButton:hover { background: #2e2e2e; }
-            QToolButton:checked { background: #3584e4; color: white; }
-        """)
+        btn_style = """
+            QPushButton {
+                background: transparent; color: #ccc;
+                border: none; border-radius: 4px;
+                padding: 4px 10px; font-size: 10pt;
+            }
+            QPushButton:hover   { background: #2e2e2e; color: #fff; }
+            QPushButton:checked { background: #3584e4; color: #fff; }
+        """
 
-        open_btn = QAction("📂 Open", self)
-        open_btn.triggered.connect(self.open_file)
-        tb.addAction(open_btn)
-        tb.addSeparator()
+        def _btn(label, slot, checkable=False):
+            b = QPushButton(label)
+            b.setCheckable(checkable)
+            b.setStyleSheet(btn_style)
+            b.clicked.connect(slot)
+            return b
 
-        fit_w_btn = QAction("↔ Fit Width", self)
-        fit_w_btn.triggered.connect(lambda: self.page_view.set_fit_mode("fit_width"))
-        fit_p_btn = QAction("⬜ Fit Page", self)
-        fit_p_btn.triggered.connect(lambda: self.page_view.set_fit_mode("fit_page"))
-        tb.addActions([fit_w_btn, fit_p_btn])
-        tb.addSeparator()
+        def _sep():
+            f = QFrame()
+            f.setFrameShape(QFrame.Shape.VLine)
+            f.setStyleSheet("color: #333;")
+            f.setFixedWidth(10)
+            return f
 
-        zi = QAction("🔍+", self)
-        zi.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale * 1.2))
-        zo = QAction("🔍−", self)
-        zo.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale / 1.2))
-        tb.addActions([zi, zo])
-        tb.addSeparator()
+        lay.addWidget(_btn("📂 Open",     self.open_file))
+        lay.addWidget(_sep())
+        lay.addWidget(_btn("↔ Fit Width", lambda: self.page_view.set_fit_mode("fit_width")))
+        lay.addWidget(_btn("⬜ Fit Page", lambda: self.page_view.set_fit_mode("fit_page")))
+        lay.addWidget(_sep())
+        lay.addWidget(_btn("🔍+", lambda: self.page_view.set_scale(self.page_view._scale * 1.2)))
+        lay.addWidget(_btn("🔍−", lambda: self.page_view.set_scale(self.page_view._scale / 1.2)))
+        lay.addWidget(_sep())
 
-        self.ocr_btn = QAction("🔤 OCR Mode", self, checkable=True)
-        self.ocr_btn.triggered.connect(self._toggle_ocr_mode)
-        tb.addAction(self.ocr_btn)
+        self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True)
+        lay.addWidget(self.ocr_btn)
+        lay.addStretch()
 
-    # ── Drag & Drop ──────────────────────────────────────────────────────────
+        # Insert after menu bar (index 2: title_bar=0, menu=1, toolbar=2)
+        self._outer_lay.insertWidget(2, bar)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Frameless resize
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # nativeEvent intentionally omitted — ctypes MSG pointer handling changed
+    # in Python 3.14 and causes a hard crash on show(). Resize is handled
+    # entirely via Qt mouse events on all platforms (see mousePressEvent etc.)
+
+    # ── Mac / Linux: manual edge-resize via Qt mouse events ──────────────────
+
+    def _hit_edges(self, pos: QPoint) -> QPoint:
+        """Return (dx, dy) where -1/+1 indicates which edge is hit, 0 = none."""
+        E = self._EDGE
+        w, h = self.width(), self.height()
+        return QPoint(
+            -1 if pos.x() < E else (1 if pos.x() > w - E else 0),
+            -1 if pos.y() < E else (1 if pos.y() > h - E else 0),
+        )
+
+    def _edge_cursor(self, d: QPoint) -> Qt.CursorShape:
+        dx, dy = d.x(), d.y()
+        if   dx and dy and dx == dy: return Qt.CursorShape.SizeFDiagCursor
+        elif dx and dy:              return Qt.CursorShape.SizeBDiagCursor
+        elif dx:                     return Qt.CursorShape.SizeHorCursor
+        elif dy:                     return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.ArrowCursor
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            d = self._hit_edges(event.pos())
+            if d.x() or d.y():
+                self._resizing      = True
+                self._resize_dir    = d
+                self._resize_origin = event.globalPosition().toPoint()
+                self._resize_geo    = self.geometry()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resizing and self._resize_origin and self._resize_geo:
+            delta  = event.globalPosition().toPoint() - self._resize_origin
+            geo    = QRect(self._resize_geo)
+            dx, dy = self._resize_dir.x(), self._resize_dir.y()
+            if dx == -1:  geo.setLeft(geo.left()    + delta.x())
+            elif dx == 1: geo.setRight(geo.right()  + delta.x())
+            if dy == -1:  geo.setTop(geo.top()      + delta.y())
+            elif dy == 1: geo.setBottom(geo.bottom()+ delta.y())
+            if geo.width() >= self.minimumWidth() and geo.height() >= self.minimumHeight():
+                self.setGeometry(geo)
+            event.accept()
+            return
+        d = self._hit_edges(event.pos())
+        if d.x() or d.y():
+            self.setCursor(self._edge_cursor(d))
+        else:
+            self.unsetCursor()  # let child widgets control their own cursors
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resizing:
+            self._resizing      = False
+            self._resize_origin = None
+            self._resize_geo    = None
+            self.unsetCursor()  # restore child widget cursor control
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Window state change — keep max/restore icon in sync
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self.title_bar.update_max_icon()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Drag & drop
+    # ─────────────────────────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls and urls[0].isLocalFile():
-                event.acceptProposedAction()
-                return
-        event.ignore()
+        urls = event.mimeData().urls()
+        if urls and urls[0].isLocalFile():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event):
         urls = event.mimeData().urls()
@@ -706,11 +997,13 @@ class TakoReader(QMainWindow):
                 self._load_path(path)
         event.acceptProposedAction()
 
-    # ── File Loading ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # File loading
+    # ─────────────────────────────────────────────────────────────────────────
 
     def open_file(self):
         last_dir = self._settings.value("last_dir", "")
-        path, _ = QFileDialog.getOpenFileName(
+        path, _  = QFileDialog.getOpenFileName(
             self, "Open Manga File", last_dir,
             "Manga Files (*.cbz *.zip *.pdf *.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"
         )
@@ -719,7 +1012,7 @@ class TakoReader(QMainWindow):
 
     def open_folder(self):
         last_dir = self._settings.value("last_dir", "")
-        path = QFileDialog.getExistingDirectory(self, "Open Manga Folder", last_dir)
+        path     = QFileDialog.getExistingDirectory(self, "Open Manga Folder", last_dir)
         if path:
             self._load_path(path)
 
@@ -743,18 +1036,22 @@ class TakoReader(QMainWindow):
             QMessageBox.warning(self, "No Pages", "No readable images found in this file.")
             return
 
-        self._pages = pages
+        self._pages   = pages
         self._current = 0
         self._settings.setValue("last_dir", str(Path(path).parent))
-        self.setWindowTitle(f"Tako Reader — {Path(path).name}")
+
+        title = f"Tako Reader — {Path(path).name}"
+        self.setWindowTitle(title)
+        self.title_bar.set_title(title)
 
         self.thumb_list.load_pages(pages)
         self.page_spin.setRange(1, len(pages))
-
         self.go_to_page(0)
         self.statusBar().showMessage(f"Loaded {len(pages)} pages — {Path(path).name}")
 
-    # ── Navigation ───────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Navigation
+    # ─────────────────────────────────────────────────────────────────────────
 
     def go_to_page(self, index: int):
         if not self._pages:
@@ -773,22 +1070,20 @@ class TakoReader(QMainWindow):
         self.btn_last.setEnabled(index < len(self._pages) - 1)
 
     def prev_page(self):
-        if self._reading_mode == "rtl":
-            self.go_to_page(self._current + 1)
-        else:
-            self.go_to_page(self._current - 1)
+        self.go_to_page(self._current + (1 if self._reading_mode == "rtl" else -1))
 
     def next_page(self):
-        if self._reading_mode == "rtl":
-            self.go_to_page(self._current - 1)
-        else:
-            self.go_to_page(self._current + 1)
+        self.go_to_page(self._current + (-1 if self._reading_mode == "rtl" else 1))
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
-        self.statusBar().showMessage(f"Reading mode: {'Right→Left (Manga)' if mode=='rtl' else 'Left→Right'}")
+        self.statusBar().showMessage(
+            f"Reading mode: {'Right→Left (Manga)' if mode == 'rtl' else 'Left→Right'}"
+        )
 
-    # ── OCR ──────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # OCR
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _toggle_ocr_mode(self, checked: bool | None = None):
         if checked is None:
@@ -796,32 +1091,50 @@ class TakoReader(QMainWindow):
         self.act_ocr_mode.setChecked(checked)
         self.ocr_btn.setChecked(checked)
         self.page_view.set_ocr_mode(checked)
-        if checked:
-            self.statusBar().showMessage("OCR mode: drag to select text region on page")
-        else:
-            self.statusBar().showMessage("OCR mode off")
+        self.statusBar().showMessage(
+            "OCR mode: drag to select text region on page" if checked else "OCR mode off"
+        )
 
     def _run_ocr(self, image: QImage, rect: QRect):
         if self._ocr_worker and self._ocr_worker.isRunning():
             return
-        self.ocr_panel.set_status("⏳ Running OCR…")
-        self._ocr_worker = OCRWorker(image, rect)
+        device = self.ocr_panel.selected_device()
+        self.ocr_panel.set_status(f"⏳ Running OCR on {device}…")
+        self._ocr_worker = OCRWorker(image, rect, device=device)
         self._ocr_worker.result_ready.connect(self.ocr_panel.set_text)
         self._ocr_worker.error_occurred.connect(self.ocr_panel.set_status)
         self._ocr_worker.start()
 
     def _check_ocr(self):
+        lines = []
         try:
             import manga_ocr
-            msg = "✅ manga-ocr is installed and ready."
+            lines.append("✅ manga-ocr is installed.")
         except ImportError:
-            msg = ("❌ manga-ocr is NOT installed.\n\n"
-                   "To install, run:\n"
-                   "  pip install manga-ocr\n\n"
-                   "This will download the OCR model (~400 MB) on first use.")
-        QMessageBox.information(self, "OCR Status", msg)
+            lines.append("❌ manga-ocr is NOT installed.")
+            lines.append("   Run: pip install manga-ocr")
 
-    # ── Keyboard ─────────────────────────────────────────────────────────────
+        try:
+            import torch
+            lines.append(f"✅ PyTorch {torch.__version__} installed.")
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    name = torch.cuda.get_device_name(i)
+                    cap  = torch.cuda.get_device_capability(i)
+                    lines.append(f"✅ CUDA:{i}  {name}  (sm_{cap[0]}{cap[1]})")
+            else:
+                lines.append("⚠️  CUDA not available — CPU only.")
+                lines.append("   For RTX 50-series, install PyTorch nightly:")
+                lines.append("   pip install --pre torch --index-url")
+                lines.append("   https://download.pytorch.org/whl/nightly/cu128")
+        except ImportError:
+            lines.append("❌ PyTorch not installed.")
+
+        QMessageBox.information(self, "OCR Status", "\n".join(lines))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Keyboard shortcuts
+    # ─────────────────────────────────────────────────────────────────────────
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -834,30 +1147,53 @@ class TakoReader(QMainWindow):
         elif key == Qt.Key.Key_End:
             self.go_to_page(len(self._pages) - 1)
         elif key == Qt.Key.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
+            self.showNormal() if self.isFullScreen() else self.showFullScreen()
         else:
             super().keyPressEvent(event)
 
-    # ── Theme ─────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Theme
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _apply_dark_theme(self):
         self.setStyleSheet("""
-            QMainWindow, QWidget { background: #1a1a1a; color: #e0e0e0; }
-            QMenuBar { background: #1e1e1e; color: #ddd; border-bottom: 1px solid #2a2a2a; }
-            QMenuBar::item:selected { background: #3584e4; }
-            QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
-            QMenu::item:selected { background: #3584e4; }
-            QStatusBar { background: #1e1e1e; color: #888; font-size: 9pt; }
-            QScrollBar:vertical { background: #1a1a1a; width: 10px; }
-            QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 30px; }
-            QScrollBar:horizontal { background: #1a1a1a; height: 10px; }
+            QMainWindow, QWidget          { background: #1a1a1a; color: #e0e0e0; }
+
+            #OuterContainer               { background: #1a1a1a;
+                                            border: 1px solid #3a3a3a;
+                                            border-radius: 8px; }
+
+            #TitleBar                     { background: #1e1e1e;
+                                            border-bottom: 1px solid #2a2a2a;
+                                            border-top-left-radius: 8px;
+                                            border-top-right-radius: 8px; }
+            #TitleLabel                   { color: #cccccc; font-size: 10pt; }
+
+            #MainMenuBar                  { background: #1a1a1a; color: #ddd;
+                                            border-bottom: 1px solid #2a2a2a; }
+            #MainMenuBar::item:selected   { background: #3584e4; }
+
+            QMenu                         { background: #252525; color: #ddd;
+                                            border: 1px solid #3a3a3a; }
+            QMenu::item:selected          { background: #3584e4; }
+
+            #ToolBar                      { background: #1e1e1e;
+                                            border-bottom: 1px solid #2a2a2a; }
+
+            QStatusBar                    { background: #1e1e1e; color: #888;
+                                            font-size: 9pt;
+                                            border-top: 1px solid #2a2a2a; }
+
+            QScrollBar:vertical           { background: #1a1a1a; width: 10px; }
+            QScrollBar::handle:vertical   { background: #3a3a3a; border-radius: 5px;
+                                            min-height: 30px; }
+            QScrollBar:horizontal         { background: #1a1a1a; height: 10px; }
             QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 5px; }
         """)
 
-    # ── Settings ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Settings persistence
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _restore_settings(self):
         geo = self._settings.value("geometry")
@@ -869,26 +1205,46 @@ class TakoReader(QMainWindow):
         super().closeEvent(event)
 
 
-# ─── Entry Point ─────────────────────────────────────────────────────────────
+# ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def main():
-    # Must be set before QApplication is created
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
+    import traceback
 
-    app = QApplication(sys.argv)
-    app.setApplicationName("TakoReader")
-    app.setOrganizationName("TakoReaderJP")
+    print("[tako] startup begin")
+    print(f"[tako] python {sys.version}")
+    print(f"[tako] platform: {platform.system()} {platform.release()}")
 
-    window = TakoReader()
-    window.show()
+    try:
+        print("[tako] setting DPI policy...")
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
-    # If a file was passed on the command line
-    if len(sys.argv) > 1:
-        window._load_path(sys.argv[1])
+        print("[tako] creating QApplication...")
+        app = QApplication(sys.argv)
+        app.setApplicationName("TakoReader")
+        app.setOrganizationName("TakoReaderJP")
+        print("[tako] QApplication OK")
 
-    sys.exit(app.exec())
+        print("[tako] creating TakoReader window...")
+        window = TakoReader()
+        print("[tako] TakoReader OK")
+
+        print("[tako] calling window.show()...")
+        window.show()
+        print("[tako] window shown, entering event loop")
+
+        if len(sys.argv) > 1:
+            print(f"[tako] loading file: {sys.argv[1]}")
+            window._load_path(sys.argv[1])
+
+        sys.exit(app.exec())
+
+    except Exception:
+        print("[tako] FATAL EXCEPTION:")
+        traceback.print_exc()
+        input("\nPress Enter to exit...")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
