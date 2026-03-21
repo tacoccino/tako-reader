@@ -798,15 +798,10 @@ class TakoReader(QMainWindow):
         self._EDGE           = 6
 
         self._build_ui()
-        print("[tako] _build_ui OK")
         self._build_menu()
-        print("[tako] _build_menu OK")
         self._build_toolbar()
-        print("[tako] _build_toolbar OK")
         self._apply_dark_theme()
-        print("[tako] _apply_dark_theme OK")
         self._restore_settings()
-        print("[tako] _restore_settings OK")
         self.setAcceptDrops(True)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1332,36 +1327,45 @@ class TakoReader(QMainWindow):
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
+DEBUG = "--debug" in sys.argv
+
+
+def dlog(msg: str):
+    """Print only when --debug flag is passed."""
+    if DEBUG:
+        print(f"[tako] {msg}")
+
+
 def main():
     import traceback
 
-    print("[tako] startup begin")
-    print(f"[tako] python {sys.version}")
-    print(f"[tako] platform: {platform.system()} {platform.release()}")
+    dlog(f"startup begin — python {sys.version}")
+    dlog(f"platform: {platform.system()} {platform.release()}")
+
+    # Strip --debug from argv so Qt doesn't see it
+    argv = [a for a in sys.argv if a != "--debug"]
 
     try:
-        print("[tako] setting DPI policy...")
+        dlog("setting DPI policy...")
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
 
-        print("[tako] creating QApplication...")
-        app = QApplication(sys.argv)
+        dlog("creating QApplication...")
+        app = QApplication(argv)
         app.setApplicationName("TakoReader")
         app.setOrganizationName("TakoReaderJP")
-        print("[tako] QApplication OK")
 
-        print("[tako] creating TakoReader window...")
+        dlog("creating TakoReader window...")
         window = TakoReader()
-        print("[tako] TakoReader OK")
 
-        print("[tako] calling window.show()...")
+        dlog("calling window.show()...")
         window.show()
-        print("[tako] window shown, entering event loop")
+        dlog("window shown, entering event loop")
 
-        if len(sys.argv) > 1:
-            print(f"[tako] loading file: {sys.argv[1]}")
-            window._load_path(sys.argv[1])
+        if len(argv) > 1:
+            dlog(f"loading file: {argv[1]}")
+            window._load_path(argv[1])
 
         sys.exit(app.exec())
 

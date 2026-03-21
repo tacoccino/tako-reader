@@ -11,6 +11,7 @@ drag-to-OCR text extraction powered by **manga-ocr**.
 |---|---|
 | **File formats** | CBZ, ZIP, PDF, JPG, PNG, WebP, BMP, GIF, TIFF, AVIF, folders |
 | **OCR** | Drag-select any text region → instant Japanese text extraction |
+| **OCR device** | CPU or CUDA GPU selector in the OCR panel |
 | **Reading modes** | RTL (manga default) or LTR |
 | **Zoom** | Fit Width, Fit Page, or custom zoom in/out |
 | **Thumbnails** | Scrollable page strip for quick navigation |
@@ -60,6 +61,12 @@ python tako_reader.py
 python tako_reader.py /path/to/volume.cbz
 ```
 
+Pass `--debug` to print startup and diagnostic info to the terminal:
+
+```bash
+python tako_reader.py --debug
+```
+
 ---
 
 ## How to use OCR
@@ -67,8 +74,8 @@ python tako_reader.py /path/to/volume.cbz
 1. Click **🔤 OCR Mode** in the toolbar (or `Ctrl+Shift+O`)
 2. Your cursor changes to a crosshair
 3. **Drag** a rectangle over Japanese text on the page
-4. Wait ~1–3 seconds — extracted text appears in the right panel
-5. **Copy** it to clipboard, then paste into Jisho, Anki, etc.
+4. The first OCR call is slow (~10–15s) while the model loads — subsequent calls are fast
+5. Extracted text appears in the right panel — copy and paste into Jisho, Anki, etc.
 
 ---
 
@@ -104,7 +111,7 @@ pip install pymupdf
 - Very small font sizes may need zoom-in first
 
 ### Slow first OCR
-Normal — the model loads into memory on first use. Subsequent calls are fast.
+Normal — the model loads into a subprocess on first use. Every call after that is fast within the same session.
 
 ### macOS: "App can't be opened"
 ```bash
@@ -112,8 +119,54 @@ Normal — the model loads into memory on first use. Subsequent calls are fast.
 python3 tako_reader.py
 ```
 
-### Windows: DLL errors with PyQt6
-Install the Visual C++ Redistributable from Microsoft's website.
+---
+
+## Windows: OCR / PyTorch DLL errors
+
+OCR on Windows can fail with a `DLL initialization routine failed` error related to `c10.dll` or other PyTorch libraries. This happens because:
+
+- The default `torch` wheel on PyPI is built with CUDA, and even the `+cpu` variant attempts to load CUDA DLLs at import time on Windows
+- **RTX 50-series (Blackwell) GPUs** — CUDA driver initialisation fails for `c10.dll` on certain driver/PyTorch version combinations
+
+**Fix: install torch CPU-only, then reinstall manga-ocr without letting it overwrite torch**
+
+```bash
+pip uninstall torch torchvision torchaudio manga-ocr -y
+pip cache purge
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install manga-ocr --no-deps
+pip install transformers fugashi unidic-lite jaconv Pillow
+```
+
+Verify the correct build is installed — the version string must end in `+cpu`:
+
+```bash
+python -c "import torch; print(torch.__version__)"
+# Expected: 2.x.x+cpu
+```
+
+OCR will now work on CPU. The first call per session is slow (~10–15s) while the model loads; subsequent calls are fast.
+
+### Enabling CUDA on Windows (RTX 50-series / Blackwell)
+
+As of early 2026, stable PyTorch wheels with Blackwell (sm_120) CUDA kernel support for Windows are not yet available. You can try the nightly build:
+
+```bash
+pip uninstall torch -y
+pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+
+Once installed, reopen Tako Reader — the OCR device dropdown in the panel will show your GPU if CUDA initialises correctly. Use **OCR → Check OCR Installation** in the menu to diagnose.
+
+### Checking what's installed
+
+Use the built-in diagnostic via **OCR → Check OCR Installation** in the menu bar. It shows manga-ocr status, PyTorch version, and any detected CUDA devices with their compute capability.
+
+You can also check from the terminal:
+
+```bash
+python -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())"
+```
 
 ---
 
