@@ -7,3 +7,6 @@ Pillow>=10.0.0       # Image processing
 numpy>=1.24.0        # Array ops for OCR image conversion
 manga-ocr>=0.1.11    # Japanese OCR — downloads ~400 MB model on first use
                      # Comment out the line above if you don't need OCR
+jamdict>=0.1.0           # Offline Japanese dictionary (JMdict + KANJIDIC2)
+jamdict-data-fix>=1.5.1a2  # Dictionary data files — Windows-compatible version of jamdict-data
+                            # On Mac/Linux you can use jamdict-data instead

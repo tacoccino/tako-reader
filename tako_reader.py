@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QListWidget, QDialog, QDialogButtonBox,
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
-    QProgressDialog, QMenuBar, QMenu, QCheckBox
+    QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -393,44 +393,385 @@ class PageView(QLabel):
                             self.ocr_requested.emit(self._pixmap_orig.toImage(), img_rect)
 
 
+# ─── Segmentation helper ─────────────────────────────────────────────────────
+
+def _segment_japanese(text: str) -> list[str]:
+    """
+    Tokenise Japanese text into a list of surface forms using fugashi.
+    Falls back to returning the whole string as one token if unavailable.
+    """
+    try:
+        import fugashi
+        tagger = fugashi.Tagger()
+        return [w.surface for w in tagger(text) if w.surface.strip()]
+    except Exception:
+        return [text]
+
+
+# ─── Dictionary lookup ───────────────────────────────────────────────────────
+
+def _lookup_word(word: str) -> list[dict]:
+    """
+    Look up a word using jamdict.
+    Returns a list of entry dicts:
+      {
+        "word":    str,               # the surface/kanji form
+        "readings": [str],            # hiragana readings
+        "senses":  [str],             # English definitions
+        "kanji":   [                  # per-kanji breakdown (may be empty)
+          {
+            "char":    str,
+            "meaning": str,
+            "onyomi":  [str],
+            "kunyomi": [str],
+          }
+        ]
+      }
+    Returns [] if jamdict is not installed or word not found.
+    """
+    try:
+        from jamdict import Jamdict
+        jmd = Jamdict()
+        result = jmd.lookup(word)
+        entries = []
+        for entry in result.entries:
+            readings = [str(r) for r in entry.kana_forms] or [str(k) for k in entry.kanji_forms]
+            senses   = []
+            for sense in entry.senses:
+                gloss = "; ".join(str(g) for g in sense.gloss)
+                if gloss:
+                    senses.append(gloss)
+            # Kanji breakdown
+            kanji_info = []
+            for kc in result.chars:
+                meanings = [str(m) for m in kc.meanings()] if hasattr(kc, "meanings") else []
+                if not meanings:
+                    meanings = [str(m) for m in kc.rm_groups[0].meanings] if kc.rm_groups else []
+                onyomi  = []
+                kunyomi = []
+                for rg in kc.rm_groups:
+                    for r in rg.readings:
+                        if hasattr(r, "r_type"):
+                            if r.r_type == "ja_on":
+                                onyomi.append(str(r))
+                            elif r.r_type == "ja_kun":
+                                kunyomi.append(str(r))
+                kanji_info.append({
+                    "char":    str(kc.literal),
+                    "meaning": ", ".join(meanings[:3]),
+                    "onyomi":  onyomi,
+                    "kunyomi": kunyomi,
+                })
+            entries.append({
+                "word":     word,
+                "readings": readings,
+                "senses":   senses,
+                "kanji":    kanji_info,
+            })
+        return entries
+    except Exception:
+        return []
+
+
+# ─── Dictionary popup ─────────────────────────────────────────────────────────
+
+class DictPopup(QWidget):
+    """
+    Floating frameless popup showing dictionary info for a Japanese word.
+    Dismisses on click outside.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setMinimumWidth(320)
+        self.setMaximumWidth(400)
+        self.setMaximumHeight(520)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("""
+            QWidget {
+                background: #252535;
+                color: #e0e0e0;
+                border: 1px solid #3a3a5a;
+                border-radius: 8px;
+            }
+            QLabel { border: none; background: transparent; }
+            QPushButton {
+                background: #2a2a3a; color: #ccc;
+                border: 1px solid #444; border-radius: 5px;
+                padding: 4px 10px; font-size: 9pt;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+            QScrollBar:vertical { background: #252535; width: 6px; }
+            QScrollBar::handle:vertical { background: #4a4a6a; border-radius: 3px; }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(self._scroll)
+
+        self._content = QWidget()
+        self._content.setStyleSheet("background: transparent; border: none;")
+        self._lay = QVBoxLayout(self._content)
+        self._lay.setContentsMargins(14, 12, 14, 12)
+        self._lay.setSpacing(10)
+        self._scroll.setWidget(self._content)
+
+    # ── Public ────────────────────────────────────────────────────────────────
+
+    def show_word(self, word: str, global_pos: "QPoint"):
+        """Look up word, populate content, and show near global_pos."""
+        self._populate(word)
+        self._reposition(global_pos)
+        self.show()
+
+    # ── Build content ─────────────────────────────────────────────────────────
+
+    def _clear(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _populate(self, word: str):
+        self._clear()
+        entries = _lookup_word(word)
+
+        if not entries:
+            self._add_label(f"No results for <b>{word}</b>", size=10)
+            self._add_buttons(word)
+            self._lay.addStretch()
+            self._resize_to_content()
+            return
+
+        for i, entry in enumerate(entries):
+            if i > 0:
+                div = QFrame()
+                div.setFrameShape(QFrame.Shape.HLine)
+                div.setStyleSheet("color: #3a3a5a; background: #3a3a5a; border: none; max-height: 1px;")
+                self._lay.addWidget(div)
+
+            # Word + reading
+            word_lbl = QLabel(entry["word"])
+            word_lbl.setFont(QFont("Noto Serif JP, serif", 20, QFont.Weight.Bold))
+            word_lbl.setStyleSheet("color: #ffffff; border: none; background: transparent;")
+            word_lbl.setWordWrap(True)
+            self._lay.addWidget(word_lbl)
+
+            if entry["readings"]:
+                reading = "・".join(entry["readings"][:4])
+                self._add_label(reading, size=12, colour="#93b4d4")
+
+            # Definitions
+            if entry["senses"]:
+                self._add_label("Definitions", size=8, colour="#666", bold=True)
+                for j, sense in enumerate(entry["senses"][:6]):
+                    self._add_label(f"{j+1}.  {sense}", size=9, indent=True)
+
+            # Kanji breakdown
+            if entry["kanji"]:
+                self._add_label("Kanji", size=8, colour="#666", bold=True)
+                for kinfo in entry["kanji"]:
+                    kw = QWidget()
+                    kw.setStyleSheet("background: #1e1e2e; border-radius: 6px; border: none;")
+                    kl = QVBoxLayout(kw)
+                    kl.setContentsMargins(10, 8, 10, 8)
+                    kl.setSpacing(3)
+
+                    char_lbl = QLabel(kinfo["char"])
+                    char_lbl.setFont(QFont("Noto Serif JP, serif", 18, QFont.Weight.Bold))
+                    char_lbl.setStyleSheet("color: #fff; background: transparent; border: none;")
+                    kl.addWidget(char_lbl)
+
+                    if kinfo["meaning"]:
+                        m = QLabel(kinfo["meaning"])
+                        m.setStyleSheet("color: #aaa; font-size: 9pt; background: transparent; border: none;")
+                        m.setWordWrap(True)
+                        kl.addWidget(m)
+
+                    readings_row = QHBoxLayout()
+                    readings_row.setSpacing(12)
+                    if kinfo["onyomi"]:
+                        on = QLabel("音: " + "、".join(kinfo["onyomi"][:4]))
+                        on.setStyleSheet("color: #e8a87c; font-size: 9pt; background: transparent; border: none;")
+                        readings_row.addWidget(on)
+                    if kinfo["kunyomi"]:
+                        kun = QLabel("訓: " + "、".join(kinfo["kunyomi"][:4]))
+                        kun.setStyleSheet("color: #a8d8a8; font-size: 9pt; background: transparent; border: none;")
+                        readings_row.addWidget(kun)
+                    readings_row.addStretch()
+                    kl.addLayout(readings_row)
+                    self._lay.addWidget(kw)
+
+        self._add_buttons(entries[0]["word"])
+        self._lay.addStretch()
+        self._resize_to_content()
+
+    def _add_label(self, text: str, size: int = 10, colour: str = "#ccc",
+                   bold: bool = False, indent: bool = False):
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            f"color: {colour}; font-size: {size}pt;"
+            f"{'font-weight: bold;' if bold else ''}"
+            f"{'margin-left: 8px;' if indent else ''}"
+            " background: transparent; border: none;"
+        )
+        self._lay.addWidget(lbl)
+
+    def _add_buttons(self, word: str):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+
+        jisho_btn = QPushButton("🔍 Jisho")
+        jisho_btn.clicked.connect(
+            lambda: webbrowser.open("https://jisho.org/search/" + url_quote(word))
+        )
+        tako_btn = QPushButton("🐙 Takoboto")
+        tako_btn.clicked.connect(
+            lambda: webbrowser.open("https://takoboto.jp/?q=" + url_quote(word))
+        )
+        # Placeholder slot for future AnkiConnect button
+        self._anki_slot = word
+
+        row.addWidget(jisho_btn)
+        row.addWidget(tako_btn)
+        row.addStretch()
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent; border: none;")
+        container.setLayout(row)
+        self._lay.addWidget(container)
+
+    def _resize_to_content(self):
+        self._content.adjustSize()
+        h = min(self._content.sizeHint().height() + 4, self.maximumHeight())
+        self.resize(self.width(), h)
+
+    def _reposition(self, global_pos: "QPoint"):
+        screen = QGuiApplication.screenAt(global_pos)
+        if screen:
+            sg = screen.availableGeometry()
+        else:
+            sg = QGuiApplication.primaryScreen().availableGeometry()
+
+        x = global_pos.x() + 12
+        y = global_pos.y() + 12
+
+        # Flip left if too close to right edge
+        if x + self.width() > sg.right():
+            x = global_pos.x() - self.width() - 12
+        # Flip up if too close to bottom
+        if y + self.height() > sg.bottom():
+            y = global_pos.y() - self.height() - 12
+
+        self.move(x, y)
+
+
 # ─── OCR Sidebar ─────────────────────────────────────────────────────────────
+
+class HoverTextBrowser(QTextBrowser):
+    """QTextBrowser that tracks which anchor the cursor is currently over."""
+
+    hovered_anchor_changed = pyqtSignal(str)  # emits href, or "" when none
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._current_anchor = ""
+        self.setMouseTracking(True)
+
+    def mouseMoveEvent(self, event):
+        anchor = self.anchorAt(event.pos())
+        if anchor != self._current_anchor:
+            self._current_anchor = anchor
+            self.hovered_anchor_changed.emit(anchor)
+            self.viewport().setCursor(
+                Qt.CursorShape.PointingHandCursor if anchor
+                else Qt.CursorShape.IBeamCursor
+            )
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self._current_anchor:
+            self._current_anchor = ""
+            self.hovered_anchor_changed.emit("")
+        super().leaveEvent(event)
+
+
+# Colours used in the text browser
+_TEXT_COLOUR   = "#cdd6f4"   # plain text
+_WORD_COLOUR   = "#93b4d4"   # segmented words (subtle blue tint)
+_WORD_HOVER    = "#1e1e2e"   # hover text (dark, against highlight bg)
+_WORD_HOVER_BG = "#93b4d4"   # hover background
+_BG_COLOUR     = "#1e1e2e"
+
 
 class OCRPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(280)
+        self._raw_texts: list[str] = []   # accumulates raw OCR strings
+        self._segmentation_on = False
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        # ── Header row: title + segmentation toggle ──
+        header_row = QHBoxLayout()
         title = QLabel("📖 OCR / Text")
         title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        layout.addWidget(title)
+        header_row.addWidget(title, stretch=1)
 
-        self.text_box = QTextEdit()
-        self.text_box.setReadOnly(False)
+        self.seg_check = QCheckBox("Segment")
+        self.seg_check.setChecked(False)
+        self.seg_check.setToolTip(
+            "Tokenise text into words.\nClick a word to search it on Jisho."
+        )
+        self.seg_check.setStyleSheet("""
+            QCheckBox { color: #888; font-size: 9pt; }
+            QCheckBox::indicator {
+                width: 14px; height: 14px;
+                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
+        """)
+        self.seg_check.stateChanged.connect(self._on_seg_toggled)
+        header_row.addWidget(self.seg_check)
+        layout.addLayout(header_row)
+
+        # ── Text display: HoverTextBrowser supports links + hover + normal selection ──
+        self._hovered_word = ""
+        self.text_box = HoverTextBrowser()
+        self.text_box.setOpenLinks(False)   # we handle clicks ourselves
         self.text_box.setFont(QFont("Noto Serif JP, serif", 16))
-        self.text_box.setPlaceholderText("Select text area on page\nto run OCR…")
-        self.text_box.setStyleSheet("""
-            QTextEdit {
-                background: #1e1e2e;
-                color: #cdd6f4;
+        self.text_box.setStyleSheet(f"""
+            QTextBrowser {{
+                background: {_BG_COLOUR};
+                color: {_TEXT_COLOUR};
                 border: 1px solid #313244;
                 border-radius: 6px;
                 padding: 8px;
                 font-size: 18px;
-            }
+            }}
         """)
+        self.text_box.anchorClicked.connect(self._on_word_clicked)
+        self.text_box.hovered_anchor_changed.connect(self._on_hover_changed)
         self.text_box.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.text_box.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.text_box, stretch=1)
 
+        # ── Buttons ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
         self.copy_btn  = QPushButton("Copy")
         self.copy_btn.clicked.connect(self._copy)
         self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.text_box.clear)
+        self.clear_btn.clicked.connect(self._clear)
         btn_row.addWidget(self.copy_btn)
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
@@ -471,20 +812,128 @@ class OCRPanel(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-    def _selected_or_all(self) -> str:
-        text = self.text_box.textCursor().selectedText().strip()
-        return text or self.text_box.toPlainText().strip()
+        # Shared popup instance — reused across lookups
+        self._dict_popup = DictPopup()
+        self._last_hovered_word = ""  # tracks hover for context menu / shortcut
+
+    # ── Segmentation ─────────────────────────────────────────────────────────
+
+    def _on_seg_toggled(self):
+        self._segmentation_on = self.seg_check.isChecked()
+        self._hovered_word = ""
+        self._rerender()
+
+    def _on_hover_changed(self, anchor: str):
+        """Re-render with the newly hovered word highlighted."""
+        if not self._segmentation_on:
+            return
+        self._hovered_word = anchor
+        self._last_hovered_word = anchor  # remember for context menu / shortcut
+        self._rerender()
+
+    def _render_html(self, texts: list[str]) -> str:
+        """Build the HTML displayed in text_box from accumulated raw strings."""
+        html_parts = []
+        for i, raw in enumerate(texts):
+            if i > 0:
+                html_parts.append('<br>')
+            if self._segmentation_on:
+                words = _segment_japanese(raw)
+                for word in words:
+                    escaped = (word.replace("&", "&amp;")
+                                   .replace("<", "&lt;")
+                                   .replace(">", "&gt;")
+                                   .replace('"', "&quot;"))
+                    if escaped == self._hovered_word:
+                        html_parts.append(
+                            f'<a href="{escaped}" style="' +
+                            f'color:{_WORD_HOVER};' +
+                            f'background-color:{_WORD_HOVER_BG};' +
+                            f'border-radius:3px;padding:0 2px;' +
+                            f'text-decoration:none;">{escaped}</a>'
+                        )
+                    else:
+                        html_parts.append(
+                            f'<a href="{escaped}" style="color:{_WORD_COLOUR};' +
+                            f'text-decoration:none;">{escaped}</a>'
+                        )
+            else:
+                escaped = (raw.replace("&", "&amp;")
+                              .replace("<", "&lt;")
+                              .replace(">", "&gt;"))
+                html_parts.append(f'<span style="color:{_TEXT_COLOUR};">{escaped}</span>')
+
+        font_style = "font-family: 'Noto Serif JP', serif; font-size: 18px;"
+        body = "".join(html_parts)
+        return f'<div style="{font_style} color:{_TEXT_COLOUR};">{body}</div>'
+
+    def _rerender(self):
+        """Re-render current text with current segmentation state."""
+        if not self._raw_texts:
+            return
+        html = self._render_html(self._raw_texts)
+        sb   = self.text_box.verticalScrollBar()
+        sb_h = self.text_box.horizontalScrollBar()
+        vpos = sb.value()
+        hpos = sb_h.value()
+        self.text_box.setHtml(html)
+        sb.setValue(vpos)
+        sb_h.setValue(hpos)
+
+    def _on_word_clicked(self, url):
+        """Clicking a segmented word opens the inline dictionary popup."""
+        word = url.toString()
+        if word:
+            self._show_dict_popup(word)
+
+    def _show_dict_popup(self, word: str):
+        """Look up word and show the floating dictionary popup."""
+        if not word:
+            return
+        cursor_pos = QCursor.pos()
+        self._dict_popup.show_word(word, cursor_pos)
+        self.status.setText(f"Looking up: {word}")
+
+    def lookup_shortcut(self):
+        """
+        Called by keyboard shortcut.
+        Segment mode on  → look up last hovered word.
+        Segment mode off → look up selected text (no-op if nothing selected).
+        """
+        if self._segmentation_on:
+            word = self._last_hovered_word
+        else:
+            word = self.text_box.textCursor().selectedText().strip()
+        if word:
+            self._show_dict_popup(word)
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def set_text(self, text: str):
-        current = self.text_box.toPlainText()
-        self.text_box.setPlainText((current + "\n" + text) if current else text)
+        self._raw_texts.append(text)
+        html = self._render_html(self._raw_texts)
+        self.text_box.setHtml(html)
+        self.text_box.verticalScrollBar().setValue(
+            self.text_box.verticalScrollBar().maximum()
+        )
         self.status.setText("✓ OCR complete")
 
     def set_status(self, msg: str):
         self.status.setText(msg)
 
+    def _clear(self):
+        self._raw_texts.clear()
+        self.text_box.clear()
+        self.status.setText("")
+
+    def _selected_or_all(self) -> str:
+        text = self.text_box.textCursor().selectedText().strip()
+        return text or "".join(self._raw_texts)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
     def _copy(self):
-        QGuiApplication.clipboard().setText(self.text_box.toPlainText())
+        QGuiApplication.clipboard().setText("\n".join(self._raw_texts))
         self.status.setText("Copied!")
 
     def _search_jisho(self):
@@ -504,9 +953,23 @@ class OCRPanel(QWidget):
         self.status.setText("Opened in browser ↗")
 
     def _show_context_menu(self, pos):
-        menu     = self.text_box.createStandardContextMenu()
-        has_text = bool(self.text_box.toPlainText().strip())
+        menu = self.text_box.createStandardContextMenu()
         menu.addSeparator()
+
+        # Dictionary lookup — word depends on mode (see lookup_shortcut logic)
+        lookup_word = ""
+        if self._segmentation_on:
+            lookup_word = self._last_hovered_word
+        else:
+            lookup_word = self.text_box.textCursor().selectedText().strip()
+
+        dict_act = QAction("📚  Look Up in Dictionary", self)
+        dict_act.triggered.connect(lambda: self._show_dict_popup(lookup_word))
+        dict_act.setEnabled(bool(lookup_word))
+        menu.addAction(dict_act)
+        menu.addSeparator()
+
+        has_text = bool(self._raw_texts)
         for label, slot in [
             ("🔍  Search Jisho",    self._search_jisho),
             ("🐙  Search Takoboto", self._search_takoboto),
@@ -747,7 +1210,7 @@ class ThumbnailList(QListWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(110)
+        self.setFixedWidth(145)
         self.setIconSize(QSize(90, 120))
         self.setSpacing(4)
         self.setStyleSheet("""
@@ -1001,6 +1464,10 @@ class TakoReader(QMainWindow):
         check_ocr = QAction("Check OCR Installation…", self)
         check_ocr.triggered.connect(self._check_ocr)
         ocr_menu.addAction(check_ocr)
+        ocr_menu.addSeparator()
+        dict_act = QAction("Dictionary Lookup", self, shortcut="Ctrl+D")
+        dict_act.triggered.connect(lambda: self.ocr_panel.lookup_shortcut())
+        ocr_menu.addAction(dict_act)
 
         # Settings menu
         settings_menu = mb.addMenu("Settings")
