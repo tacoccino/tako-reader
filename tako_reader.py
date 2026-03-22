@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QListWidget, QDialog, QDialogButtonBox,
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
-    QProgressDialog, QMenuBar, QMenu
+    QProgressDialog, QMenuBar, QMenu, QCheckBox
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -584,6 +584,7 @@ class SettingsDialog(QDialog):
         self._content_lay.setContentsMargins(24, 20, 24, 8)
         self._content_lay.setSpacing(20)
 
+        self._build_general_section()
         self._build_ocr_section()
 
         self._content_lay.addStretch()
@@ -649,6 +650,26 @@ class SettingsDialog(QDialog):
             hint_lbl.setWordWrap(True)
             layout.addWidget(hint_lbl)
 
+    # ── General section ──────────────────────────────────────────────────────
+
+    def _build_general_section(self):
+        lay = self._section("General")
+
+        self.session_memory_check = QCheckBox()
+        self.session_memory_check.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid #444; border-radius: 3px;
+                background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked {
+                background: #3584e4; border-color: #3584e4;
+            }
+        """)
+        self._row(lay, "Session Memory", self.session_memory_check,
+                  hint="Remember the last opened file and page position. "
+                       "Reopening Tako Reader will continue where you left off.")
+
     # ── OCR section ───────────────────────────────────────────────────────────
 
     def _build_ocr_section(self):
@@ -692,6 +713,11 @@ class SettingsDialog(QDialog):
 
     def _load_values(self):
         """Populate all widgets from saved QSettings values."""
+        # General
+        session_on = self.app_settings.value("general/session_memory", True, type=bool)
+        self.session_memory_check.setChecked(session_on)
+
+        # OCR
         saved_device = self.app_settings.value("ocr/device", "cpu")
         for i in range(self.ocr_device_combo.count()):
             if self.ocr_device_combo.itemData(i) == saved_device:
@@ -700,6 +726,8 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         """Persist all values to QSettings and close."""
+        self.app_settings.setValue("general/session_memory",
+                                   self.session_memory_check.isChecked())
         self.app_settings.setValue("ocr/device", self.ocr_device_combo.currentData())
         self.accept()
 
@@ -1130,6 +1158,7 @@ class TakoReader(QMainWindow):
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
 
         self.thumb_list.load_pages(pages)
+        self._settings.setValue("session/last_file", str(Path(path).resolve()))
         self.go_to_page(0)
         self.statusBar().showMessage(f"Loaded {len(pages)} pages — {Path(path).name}")
 
@@ -1149,6 +1178,7 @@ class TakoReader(QMainWindow):
         self.btn_next.setEnabled(index < len(self._pages) - 1)
         self.btn_first.setEnabled(index > 0)
         self.btn_last.setEnabled(index < len(self._pages) - 1)
+        self._save_session_page(index)
 
     def prev_page(self):
         self.go_to_page(self._current + (1 if self._reading_mode == "rtl" else -1))
@@ -1296,6 +1326,26 @@ class TakoReader(QMainWindow):
         if geo:
             self.restoreGeometry(geo)
 
+    def _save_session_page(self, index: int):
+        """Persist the current page index (only when session memory is on)."""
+        if self._settings.value("general/session_memory", True, type=bool):
+            self._settings.setValue("session/last_page", index)
+
+    def _restore_session(self):
+        """Re-open the last file and jump to the last page, if session memory is on."""
+        if not self._settings.value("general/session_memory", True, type=bool):
+            return
+        last_file = self._settings.value("session/last_file", "")
+        last_page = self._settings.value("session/last_page", 0, type=int)
+        if last_file and Path(last_file).exists():
+            self._load_path(last_file)
+            # go_to_page(0) was called by _load_path; now jump to actual last page
+            if last_page > 0:
+                self.go_to_page(last_page)
+            self.statusBar().showMessage(
+                f"Restored session: {Path(last_file).name}  —  page {last_page + 1}"
+            )
+
     def closeEvent(self, event):
         self._settings.setValue("geometry", self.saveGeometry())
         OCRProcessManager.shutdown_all()
@@ -1343,6 +1393,9 @@ def main():
         if len(argv) > 1:
             dlog(f"loading file: {argv[1]}")
             window._load_path(argv[1])
+        else:
+            # No file passed on CLI — try to restore last session
+            window._restore_session()
 
         sys.exit(app.exec())
 
