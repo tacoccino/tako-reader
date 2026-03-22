@@ -17,7 +17,8 @@ from urllib.parse import quote as url_quote
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QScrollArea,
-    QTextEdit, QListWidget,
+    QTextEdit, QListWidget, QDialog, QDialogButtonBox,
+    QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu
 )
@@ -466,103 +467,9 @@ class OCRPanel(QWidget):
         self.takoboto_btn.clicked.connect(self._search_takoboto)
         layout.addWidget(self.takoboto_btn)
 
-        # ── Device selector ──
-        device_row = QHBoxLayout()
-        device_row.setSpacing(6)
-        device_lbl = QLabel("OCR device:")
-        device_lbl.setStyleSheet("color: #888; font-size: 9pt;")
-        device_row.addWidget(device_lbl)
-
-        from PyQt6.QtWidgets import QComboBox
-        self.device_combo = QComboBox()
-        self.device_combo.setStyleSheet("""
-            QComboBox {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 2px 6px; font-size: 9pt;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background: #252525; color: #ddd;
-                selection-background-color: #3584e4;
-            }
-        """)
-        self._populate_devices()
-        device_row.addWidget(self.device_combo, stretch=1)
-
-        self.reload_model_btn = QPushButton("↺")
-        self.reload_model_btn.setFixedWidth(28)
-        self.reload_model_btn.setToolTip("Reload OCR model on selected device")
-        self.reload_model_btn.setStyleSheet("""
-            QPushButton {
-                background: #2a2a2a; color: #aaa;
-                border: 1px solid #444; border-radius: 4px; font-size: 11pt;
-            }
-            QPushButton:hover { background: #3a3a3a; color: #fff; }
-        """)
-        self.reload_model_btn.clicked.connect(self._reload_model)
-        device_row.addWidget(self.reload_model_btn)
-        layout.addLayout(device_row)
-
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-
-    def _populate_devices(self):
-        """Fill the combo with CPU + any available CUDA devices.
-        Probes torch in a subprocess so a DLL crash can never kill the app."""
-        self.device_combo.clear()
-        self.device_combo.addItem("CPU", "cpu")
-
-        # Probe torch/CUDA in a subprocess — if torch DLLs are broken or
-        # CUDA isn't available the main process is completely unaffected.
-        try:
-            import subprocess, json as _json
-            probe = (
-                "import json, sys\n"
-                "try:\n"
-                "    import torch\n"
-                "    devices = []\n"
-                "    if torch.cuda.is_available():\n"
-                "        for i in range(torch.cuda.device_count()):\n"
-                "            devices.append({'id': i, 'name': torch.cuda.get_device_name(i)})\n"
-                "    print(json.dumps({'ok': True, 'devices': devices}))\n"
-                "except Exception as e:\n"
-                "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
-            )
-            result = subprocess.run(
-                [sys.executable, "-c", probe],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.stdout.strip():
-                data = _json.loads(result.stdout.strip().splitlines()[-1])
-                if data.get("ok"):
-                    for dev in data.get("devices", []):
-                        self.device_combo.addItem(
-                            f"CUDA:{dev['id']}  {dev['name']}", f"cuda:{dev['id']}"
-                        )
-                    if not data.get("devices"):
-                        self.device_combo.addItem(
-                            "CUDA (unavailable — CPU-only torch or driver issue)", "cpu"
-                        )
-                else:
-                    self.device_combo.addItem(
-                        f"CUDA (torch error: {data.get('error', '?')[:40]})", "cpu"
-                    )
-        except Exception as e:
-            self.device_combo.addItem(f"CUDA (probe failed: {str(e)[:40]})", "cpu")
-
-    def selected_device(self) -> str:
-        """Return the currently selected device string e.g. 'cpu' or 'cuda:0'."""
-        return self.device_combo.currentData() or "cpu"
-
-    def _reload_model(self):
-        """Restart the OCR worker process for the selected device."""
-        dev = self.selected_device()
-        if dev in OCRProcessManager._instances:
-            OCRProcessManager._instances[dev]._stop()
-            del OCRProcessManager._instances[dev]
-        self.status.setText(f"OCR process restarted for {dev}")
 
     def _selected_or_all(self) -> str:
         text = self.text_box.textCursor().selectedText().strip()
@@ -609,6 +516,200 @@ class OCRPanel(QWidget):
             act.setEnabled(has_text)
             menu.addAction(act)
         menu.exec(self.text_box.viewport().mapToGlobal(pos))
+
+
+# ─── Settings Dialog ─────────────────────────────────────────────────────────
+
+def _probe_cuda_devices() -> list[dict]:
+    """Probe for CUDA devices via subprocess so DLL crashes cannot affect the app."""
+    import subprocess, json as _json
+    probe = (
+        "import json, sys\n"
+        "try:\n"
+        "    import torch\n"
+        "    devices = []\n"
+        "    if torch.cuda.is_available():\n"
+        "        for i in range(torch.cuda.device_count()):\n"
+        "            devices.append({'id': i, 'name': torch.cuda.get_device_name(i)})\n"
+        "    print(json.dumps({'ok': True, 'devices': devices}))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.stdout.strip():
+            data = _json.loads(result.stdout.strip().splitlines()[-1])
+            if data.get("ok"):
+                return data.get("devices", [])
+    except Exception:
+        pass
+    return []
+
+
+class SettingsDialog(QDialog):
+    """
+    Modal settings window. Changes are only applied when Save is clicked.
+    Reads and writes values via QSettings so they persist across sessions.
+    """
+
+    def __init__(self, app_settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.app_settings = app_settings
+        self.setWindowTitle("Tako Reader — Settings")
+        self.setMinimumWidth(480)
+        self.setMinimumHeight(300)
+        self.setModal(True)
+        self._apply_style()
+        self._build_ui()
+        self._load_values()
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 16)
+        root.setSpacing(0)
+
+        # Scrollable content area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+
+        content = QWidget()
+        self._content_lay = QVBoxLayout(content)
+        self._content_lay.setContentsMargins(24, 20, 24, 8)
+        self._content_lay.setSpacing(20)
+
+        self._build_ocr_section()
+
+        self._content_lay.addStretch()
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
+
+        # Divider
+        div = QFrame()
+        div.setFrameShape(QFrame.Shape.HLine)
+        div.setStyleSheet("color: #2a2a2a;")
+        root.addWidget(div)
+
+        # Save / Cancel buttons
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.setContentsMargins(24, 8, 24, 0)
+        btn_box.accepted.connect(self._save)
+        btn_box.rejected.connect(self.reject)
+        btn_box.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 6px;
+                padding: 6px 20px; font-size: 10pt; min-width: 80px;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+        """)
+        root.addWidget(btn_box)
+
+    def _section(self, title: str) -> QVBoxLayout:
+        """Create a titled group box and return its inner layout."""
+        box = QGroupBox(title)
+        box.setStyleSheet("""
+            QGroupBox {
+                color: #aaa; font-size: 9pt; font-weight: bold;
+                border: 1px solid #2a2a2a; border-radius: 6px;
+                margin-top: 8px; padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin; subcontrol-position: top left;
+                left: 10px; padding: 0 4px;
+            }
+        """)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(10)
+        self._content_lay.addWidget(box)
+        return lay
+
+    def _row(self, layout: QVBoxLayout, label: str, widget: QWidget, hint: str = ""):
+        """Add a labelled row to a section layout."""
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(140)
+        lbl.setStyleSheet("color: #ccc; font-size: 10pt;")
+        row.addWidget(lbl)
+        row.addWidget(widget, stretch=1)
+        layout.addLayout(row)
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setStyleSheet("color: #666; font-size: 8pt;")
+            hint_lbl.setWordWrap(True)
+            layout.addWidget(hint_lbl)
+
+    # ── OCR section ───────────────────────────────────────────────────────────
+
+    def _build_ocr_section(self):
+        lay = self._section("OCR")
+
+        self.ocr_device_combo = QComboBox()
+        self.ocr_device_combo.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 8px; font-size: 10pt;
+            }
+            QComboBox::drop-down { border: none; width: 20px; }
+            QComboBox QAbstractItemView {
+                background: #252525; color: #ddd;
+                selection-background-color: #3584e4;
+                border: 1px solid #3a3a3a;
+            }
+        """)
+        self._populate_device_combo()
+        self._row(lay, "OCR Device", self.ocr_device_combo,
+                  hint="CPU works on all systems. CUDA requires a compatible NVIDIA GPU "
+                       "and a CUDA-enabled PyTorch build. Changes take effect on the "
+                       "next OCR call.")
+
+    def _populate_device_combo(self):
+        self.ocr_device_combo.clear()
+        self.ocr_device_combo.addItem("CPU", "cpu")
+        devices = _probe_cuda_devices()
+        if devices:
+            for dev in devices:
+                self.ocr_device_combo.addItem(
+                    f"CUDA:{dev['id']}  {dev['name']}", f"cuda:{dev['id']}"
+                )
+        else:
+            self.ocr_device_combo.addItem(
+                "CUDA (unavailable — see Troubleshooting in README)", "cpu"
+            )
+
+    # ── Load / Save ───────────────────────────────────────────────────────────
+
+    def _load_values(self):
+        """Populate all widgets from saved QSettings values."""
+        saved_device = self.app_settings.value("ocr/device", "cpu")
+        for i in range(self.ocr_device_combo.count()):
+            if self.ocr_device_combo.itemData(i) == saved_device:
+                self.ocr_device_combo.setCurrentIndex(i)
+                break
+
+    def _save(self):
+        """Persist all values to QSettings and close."""
+        self.app_settings.setValue("ocr/device", self.ocr_device_combo.currentData())
+        self.accept()
+
+    # ── Style ─────────────────────────────────────────────────────────────────
+
+    def _apply_style(self):
+        self.setStyleSheet("""
+            QDialog { background: #1a1a1a; color: #e0e0e0; }
+            QLabel  { color: #e0e0e0; }
+        """)
 
 
 # ─── Thumbnail Strip ──────────────────────────────────────────────────────────
@@ -873,9 +974,14 @@ class TakoReader(QMainWindow):
         check_ocr.triggered.connect(self._check_ocr)
         ocr_menu.addAction(check_ocr)
 
+        # Settings menu
+        settings_menu = mb.addMenu("Settings")
+        prefs_act = QAction("Preferences…", self, shortcut="Ctrl+,")
+        prefs_act.triggered.connect(self.open_settings)
+        settings_menu.addAction(prefs_act)
+
     def _build_toolbar(self) -> QWidget:
         """Returns a plain QWidget toolbar that slots into the outer VBox layout."""
-        from PyQt6.QtWidgets import QFrame
         bar = QWidget()
         bar.setObjectName("ToolBar")
         bar.setFixedHeight(36)
@@ -1087,12 +1193,23 @@ class TakoReader(QMainWindow):
     def _run_ocr(self, image: QImage, rect: QRect):
         if self._ocr_worker and self._ocr_worker.isRunning():
             return
-        device = self.ocr_panel.selected_device()
+        device = self._settings.value("ocr/device", "cpu")
         self.ocr_panel.set_status(f"⏳ Running OCR on {device}…")
         self._ocr_worker = OCRWorker(image, rect, device=device)
         self._ocr_worker.result_ready.connect(self.ocr_panel.set_text)
         self._ocr_worker.error_occurred.connect(self.ocr_panel.set_status)
         self._ocr_worker.start()
+
+    def open_settings(self):
+        dlg = SettingsDialog(self._settings, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Restart any cached OCR process so next call uses the new device
+            new_device = self._settings.value("ocr/device", "cpu")
+            for dev in list(OCRProcessManager._instances.keys()):
+                if dev != new_device:
+                    OCRProcessManager._instances[dev]._stop()
+                    del OCRProcessManager._instances[dev]
+            self.statusBar().showMessage(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
         lines = []
