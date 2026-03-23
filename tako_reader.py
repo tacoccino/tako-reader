@@ -2387,6 +2387,16 @@ def main():
         app = QApplication(argv)
         app.setApplicationName("TakoReader")
         app.setOrganizationName("TakoReaderJP")
+        app.setStyleSheet("""
+            QToolTip {
+                background: #2a2a3a;
+                color: #e0e0e0;
+                border: 1px solid #5a5a8a;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 9pt;
+            }
+        """)
 
         dlog("creating TakoReader window...")
         window = TakoReader()
