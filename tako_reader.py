@@ -521,6 +521,9 @@ class DictPopup(QWidget):
         super().__init__(parent, Qt.WindowType.Popup)
         self.app_settings = app_settings
         self._current_sentence = ""
+        self._add_workers: set = set()   # keeps refs alive until threads finish
+        self._connect_worker: "AnkiConnectWorker | None" = None
+        self._fields_worker:  "AnkiFieldsWorker | None"  = None
         self.setMinimumWidth(320)
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
@@ -778,11 +781,21 @@ class DictPopup(QWidget):
             self._show_toast("⚠ No field mapping configured in Settings.")
             return
 
-        try:
-            anki_add_note(url, key, deck, model, fields)
-            self._show_toast(f'✓ Added "{word}" to Anki')
-        except Exception as e:
-            self._show_toast(f"✗ Anki error: {str(e)[:60]}")
+        self._show_toast("⏳ Adding to Anki…", duration_ms=10000)
+        worker = AnkiAddWorker(url, key, deck, model, fields)
+        self._add_workers.add(worker)
+        worker.finished.connect(self._on_add_finished)
+        worker.finished.connect(lambda *_: self._add_workers.discard(worker))
+        worker.start()
+
+    def _on_add_finished(self, success: bool, msg: str):
+        for child in self.findChildren(QLabel):
+            if child.parent() is self and child.text().startswith("⏳"):
+                child.deleteLater()
+        if success:
+            self._show_toast(f'✓ Added "{msg}" to Anki')
+        else:
+            self._show_toast(f"✗ Anki error: {msg}")
 
     def _show_toast(self, message: str, duration_ms: int = 2500):
         """Show a brief floating notification near the bottom of the popup."""
@@ -1214,6 +1227,67 @@ def anki_add_note(url: str, api_key: str, deck: str, model: str,
         raise RuntimeError(str(e))
 
 
+# ─── AnkiConnect background workers ──────────────────────────────────────────
+
+class AnkiConnectWorker(QThread):
+    """Fetch decks + note types in one shot after a connection test."""
+    finished = pyqtSignal(bool, list, list, str)  # ok, decks, models, error
+
+    def __init__(self, url: str, api_key: str):
+        super().__init__()
+        self.url     = url
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            if not anki_test_connection(self.url, self.api_key):
+                self.finished.emit(False, [], [], "Could not connect — is Anki running?")
+                return
+            decks  = anki_get_decks(self.url, self.api_key)
+            models = anki_get_note_types(self.url, self.api_key)
+            self.finished.emit(True, decks, models, "")
+        except Exception as e:
+            self.finished.emit(False, [], [], str(e))
+
+
+class AnkiFieldsWorker(QThread):
+    """Fetch field names for a note type."""
+    finished = pyqtSignal(list)
+
+    def __init__(self, url: str, api_key: str, model: str):
+        super().__init__()
+        self.url     = url
+        self.api_key = api_key
+        self.model   = model
+
+    def run(self):
+        try:
+            self.finished.emit(anki_get_fields(self.url, self.api_key, self.model))
+        except Exception:
+            self.finished.emit([])
+
+
+class AnkiAddWorker(QThread):
+    """Add a note to Anki without blocking the UI."""
+    finished = pyqtSignal(bool, str)  # success, word/error message
+
+    def __init__(self, url: str, api_key: str, deck: str, model: str, fields: dict):
+        super().__init__()
+        self.url     = url
+        self.api_key = api_key
+        self.deck    = deck
+        self.model   = model
+        self.fields  = fields
+        self._word   = next(iter(fields.values()), "") if fields else ""
+
+    def run(self):
+        try:
+            anki_add_note(self.url, self.api_key, self.deck, self.model, self.fields)
+            self.finished.emit(True, self._word)
+        except Exception as e:
+            self.finished.emit(False, str(e)[:80])
+
+
 # ─── Anki edit dialog ────────────────────────────────────────────────────────
 
 class AnkiEditDialog(QDialog):
@@ -1544,6 +1618,9 @@ class SettingsDialog(QDialog):
             QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
         """)
         connect_btn.clicked.connect(self._anki_connect)
+        self._connect_btn    = connect_btn
+        self._connect_worker = None
+        self._fields_worker  = None
         connect_row.addWidget(self._anki_status, stretch=1)
         connect_row.addWidget(connect_btn)
         lay.addLayout(connect_row)
@@ -1599,51 +1676,73 @@ class SettingsDialog(QDialog):
         url     = self.anki_url.text().strip() or "http://localhost:8765"
         api_key = self.anki_key.text().strip()
 
-        if not anki_test_connection(url, api_key):
-            self._anki_status.setText("✗ Could not connect — is Anki running?")
+        self._connect_btn.setEnabled(False)
+        self._anki_status.setText("Connecting…")
+        self._anki_status.setStyleSheet("color: #888; font-size: 9pt;")
+
+        self._connect_worker = AnkiConnectWorker(url, api_key)
+        self._connect_worker.finished.connect(self._on_connect_finished)
+        self._connect_worker.start()
+
+    def _on_connect_finished(self, ok: bool, decks: list, models: list, error: str):
+        self._connect_btn.setEnabled(True)
+        if not ok:
+            self._anki_status.setText(f"✗ {error}")
             self._anki_status.setStyleSheet("color: #e74c3c; font-size: 9pt;")
             return
 
         self._anki_status.setText("✓ Connected")
         self._anki_status.setStyleSheet("color: #2ecc71; font-size: 9pt;")
 
-        # Populate decks
-        decks = anki_get_decks(url, api_key)
+        self.app_settings.setValue("anki/cached_decks",  decks)
+        self.app_settings.setValue("anki/cached_models", models)
+
+        saved_deck  = self.app_settings.value("anki/deck",  "")
+        saved_model = self.app_settings.value("anki/model", "")
+
+        self.anki_model.blockSignals(True)
         self.anki_deck.clear()
         self.anki_deck.addItems(decks)
-        saved_deck = self.app_settings.value("anki/deck", "")
         if saved_deck in decks:
             self.anki_deck.setCurrentText(saved_deck)
-
-        # Populate note types
-        models = anki_get_note_types(url, api_key)
         self.anki_model.clear()
         self.anki_model.addItems(models)
-        saved_model = self.app_settings.value("anki/model", "")
         if saved_model in models:
             self.anki_model.setCurrentText(saved_model)
-            self._anki_model_changed(saved_model)
+        self.anki_model.blockSignals(False)
+
+        if self.anki_model.currentText():
+            self._anki_model_changed(self.anki_model.currentText())
 
     def _anki_model_changed(self, model_name: str):
-        """Rebuild the field mapping rows for the selected note type."""
+        """Fetch fields for the selected note type in a background thread."""
+        if not model_name:
+            return
         url     = self.anki_url.text().strip() or "http://localhost:8765"
         api_key = self.anki_key.text().strip()
-        fields  = anki_get_fields(url, api_key, model_name)
 
-        # Clear existing mapping widgets
+        self._field_hint.setText("Loading fields…")
         while self._field_map_lay.count():
             item = self._field_map_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self._field_widgets.clear()
 
+        self._fields_worker = AnkiFieldsWorker(url, api_key, model_name)
+        self._fields_worker.finished.connect(
+            lambda fields: self._on_fields_fetched(fields, model_name)
+        )
+        self._fields_worker.start()
+
+    def _on_fields_fetched(self, fields: list, model_name: str):
+        """Populate field mapping rows once fields arrive from the worker."""
         if not fields:
             self._field_hint.setText("Connect to Anki to configure field mapping.")
             return
 
         self._field_hint.setText(
             "Map each Anki field to Tako Reader data. "
-            "Fields set to '— skip —' will be left blank."
+            "Fields set to '\u2014 skip \u2014' will be left blank."
         )
 
         SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence"]
@@ -1680,7 +1779,6 @@ class SettingsDialog(QDialog):
             combo.addItems(SOURCES)
             combo.setStyleSheet(combo_style)
 
-            # Restore saved mapping
             saved = self.app_settings.value(f"anki/field/{field}", "— skip —")
             if saved in SOURCES:
                 combo.setCurrentText(saved)
@@ -1693,7 +1791,6 @@ class SettingsDialog(QDialog):
             self._field_map_lay.addWidget(container)
             self._field_widgets[field] = combo
 
-    # ── Load / Save ───────────────────────────────────────────────────────────
 
     def _load_values(self):
         """Populate all widgets from saved QSettings values."""
@@ -1708,11 +1805,38 @@ class SettingsDialog(QDialog):
                 self.ocr_device_combo.setCurrentIndex(i)
                 break
 
-        # Anki — just restore URL and key; decks/fields load on connect
+        # Anki — restore URL/key and pre-populate from cache for instant display
         self.anki_url.setText(
             self.app_settings.value("anki/url", "http://localhost:8765")
         )
         self.anki_key.setText(self.app_settings.value("anki/key", ""))
+
+        cached_decks  = self.app_settings.value("anki/cached_decks",  []) or []
+        cached_models = self.app_settings.value("anki/cached_models", []) or []
+        saved_deck    = self.app_settings.value("anki/deck",  "")
+        saved_model   = self.app_settings.value("anki/model", "")
+
+        if cached_decks:
+            self.anki_deck.blockSignals(True)
+            self.anki_deck.addItems(cached_decks)
+            if saved_deck in cached_decks:
+                self.anki_deck.setCurrentText(saved_deck)
+            self.anki_deck.blockSignals(False)
+
+        if cached_models:
+            self.anki_model.blockSignals(True)
+            self.anki_model.addItems(cached_models)
+            if saved_model in cached_models:
+                self.anki_model.setCurrentText(saved_model)
+            self.anki_model.blockSignals(False)
+            if saved_model:
+                url     = self.app_settings.value("anki/url", "http://localhost:8765")
+                api_key = self.app_settings.value("anki/key", "")
+                self._fields_worker = AnkiFieldsWorker(url, api_key, saved_model)
+                self._fields_worker.finished.connect(
+                    lambda fields: self._on_fields_fetched(fields, saved_model)
+                )
+                self._fields_worker.start()
 
     def _save(self):
         """Persist all values to QSettings and close."""
