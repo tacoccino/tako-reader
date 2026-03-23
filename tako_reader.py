@@ -228,6 +228,30 @@ class OCRWorker(QThread):
             self.error_occurred.emit(traceback.format_exc())
 
 
+# ─── OCR warmup worker ───────────────────────────────────────────────────────
+
+class OCRWarmupWorker(QThread):
+    """
+    Starts the OCR subprocess in the background at app launch so the model
+    is already loaded by the time the user makes their first OCR request.
+    """
+    ready  = pyqtSignal(str)   # emits device name on success
+    failed = pyqtSignal(str)   # emits error message on failure
+
+    def __init__(self, device: str):
+        super().__init__()
+        self.device = device
+
+    def run(self):
+        mgr = OCRProcessManager.get(self.device)
+        if not mgr.is_alive():
+            mgr._start()
+        if mgr._ready:
+            self.ready.emit(self.device)
+        else:
+            self.failed.emit(mgr._error or "OCR warmup failed")
+
+
 # ─── Page View ───────────────────────────────────────────────────────────────
 
 class PageView(QLabel):
@@ -945,38 +969,6 @@ class OCRPanel(QWidget):
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
 
-        self.jisho_btn = QPushButton("🔍  Search Jisho")
-        self.jisho_btn.setToolTip(
-            "Search selected text on Jisho.org\n(uses all text if nothing is selected)"
-        )
-        self.jisho_btn.setStyleSheet("""
-            QPushButton {
-                background: #2a6496; color: #fff;
-                border-radius: 6px; padding: 6px 10px;
-                font-size: 10pt; font-weight: bold;
-            }
-            QPushButton:hover   { background: #3a7abf; }
-            QPushButton:pressed { background: #1e4f75; }
-        """)
-        self.jisho_btn.clicked.connect(self._search_jisho)
-        layout.addWidget(self.jisho_btn)
-
-        self.takoboto_btn = QPushButton("🐙  Search Takoboto")
-        self.takoboto_btn.setToolTip(
-            "Search selected text on Takoboto.jp\n(uses all text if nothing is selected)"
-        )
-        self.takoboto_btn.setStyleSheet("""
-            QPushButton {
-                background: #3d6b4f; color: #fff;
-                border-radius: 6px; padding: 6px 10px;
-                font-size: 10pt; font-weight: bold;
-            }
-            QPushButton:hover   { background: #4e8a65; }
-            QPushButton:pressed { background: #2b4d38; }
-        """)
-        self.takoboto_btn.clicked.connect(self._search_takoboto)
-        layout.addWidget(self.takoboto_btn)
-
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -1566,6 +1558,18 @@ class SettingsDialog(QDialog):
                        "and a CUDA-enabled PyTorch build. Changes take effect on the "
                        "next OCR call.")
 
+        self.ocr_warmup_check = QCheckBox()
+        self.ocr_warmup_check.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
+        """)
+        self._row(lay, "Load at Startup", self.ocr_warmup_check,
+                  hint="Pre-load the OCR model when Tako Reader starts so the "
+                       "first OCR call is instant. Adds a few seconds to launch time.")
+
     def _populate_device_combo(self):
         self.ocr_device_combo.clear()
         self.ocr_device_combo.addItem("CPU", "cpu")
@@ -1804,6 +1808,8 @@ class SettingsDialog(QDialog):
             if self.ocr_device_combo.itemData(i) == saved_device:
                 self.ocr_device_combo.setCurrentIndex(i)
                 break
+        warmup_on = self.app_settings.value("ocr/warmup", False, type=bool)
+        self.ocr_warmup_check.setChecked(warmup_on)
 
         # Anki — restore URL/key and pre-populate from cache for instant display
         self.anki_url.setText(
@@ -1842,7 +1848,8 @@ class SettingsDialog(QDialog):
         """Persist all values to QSettings and close."""
         self.app_settings.setValue("general/session_memory",
                                    self.session_memory_check.isChecked())
-        self.app_settings.setValue("ocr/device", self.ocr_device_combo.currentData())
+        self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
+        self.app_settings.setValue("ocr/warmup",  self.ocr_warmup_check.isChecked())
 
         # Anki
         self.app_settings.setValue("anki/url",   self.anki_url.text().strip())
@@ -2455,6 +2462,37 @@ class TakoReader(QMainWindow):
         if geo:
             self.restoreGeometry(geo)
 
+        # Panel visibility
+        thumb_vis = self._settings.value("ui/thumb_visible", True,  type=bool)
+        ocr_vis   = self._settings.value("ui/ocr_visible",   True,  type=bool)
+        self._toggle_thumbnails(thumb_vis)
+        self._toggle_ocr_panel(ocr_vis)
+
+        # Segment toggle
+        seg_on = self._settings.value("ui/segment_on", False, type=bool)
+        self.ocr_panel.seg_check.setChecked(seg_on)
+        # Manually fire the toggle so internal state syncs
+        self.ocr_panel._on_seg_toggled()
+
+    def _maybe_warmup_ocr(self):
+        """Start the OCR model in the background if the user has opted in."""
+        if not self._settings.value("ocr/warmup", False, type=bool):
+            return
+        device = self._settings.value("ocr/device", "cpu")
+        self.statusBar().showMessage("⏳ Pre-loading OCR model…")
+        self._warmup_worker = OCRWarmupWorker(device)
+        self._warmup_worker.ready.connect(
+            lambda dev: self.statusBar().showMessage(
+                f"✓ OCR model ready on {dev}  🐙", 4000
+            )
+        )
+        self._warmup_worker.failed.connect(
+            lambda err: self.statusBar().showMessage(
+                f"⚠ OCR warmup failed: {err}", 6000
+            )
+        )
+        self._warmup_worker.start()
+
     def _save_session_page(self, index: int):
         """Persist the current page index (only when session memory is on)."""
         if self._settings.value("general/session_memory", True, type=bool):
@@ -2476,7 +2514,10 @@ class TakoReader(QMainWindow):
             )
 
     def closeEvent(self, event):
-        self._settings.setValue("geometry", self.saveGeometry())
+        self._settings.setValue("geometry",          self.saveGeometry())
+        self._settings.setValue("ui/thumb_visible",  self.thumb_list.isVisible())
+        self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())
+        self._settings.setValue("ui/segment_on",     self.ocr_panel.seg_check.isChecked())
         OCRProcessManager.shutdown_all()
         super().closeEvent(event)
 
@@ -2535,6 +2576,10 @@ def main():
         else:
             # No file passed on CLI — try to restore last session
             window._restore_session()
+
+        # Warm up OCR in background if opted in, after a short delay so
+        # the status bar message from session restore shows first
+        QTimer.singleShot(500, window._maybe_warmup_ocr)
 
         sys.exit(app.exec())
 
