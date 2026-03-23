@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (
     QTextEdit, QListWidget, QDialog, QDialogButtonBox,
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
-    QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser
+    QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
+    QLineEdit
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -473,6 +474,41 @@ def _lookup_word(word: str) -> list[dict]:
         return []
 
 
+# ─── Furigana helper ─────────────────────────────────────────────────────────
+
+def _make_furigana_html(word: str, reading: str) -> str:
+    """
+    Return an HTML string with furigana (ruby) markup for the word.
+    Uses pykakasi to align kanji with their readings.
+    Falls back to plain "word[reading]" if pykakasi is unavailable.
+
+    Example output:
+      <ruby>食<rt>た</rt></ruby><ruby>べ<rt></rt></ruby><ruby>る<rt></rt></ruby>
+    """
+    if not word:
+        return word
+    try:
+        import pykakasi
+        kks  = pykakasi.kakasi()
+        items = kks.convert(word)
+        parts = []
+        for item in items:
+            orig = item.get("orig", "")
+            hira = item.get("hira", "")
+            # Only add ruby if the original contains kanji
+            has_kanji = any("一" <= c <= "鿿" for c in orig)
+            if has_kanji and hira and hira != orig:
+                parts.append(f"<ruby>{orig}<rt>{hira}</rt></ruby>")
+            else:
+                parts.append(orig)
+        return "".join(parts)
+    except Exception:
+        # Graceful fallback: word + reading in brackets
+        if reading and reading != word:
+            return f"{word}[{reading}]"
+        return word
+
+
 # ─── Dictionary popup ─────────────────────────────────────────────────────────
 
 class DictPopup(QWidget):
@@ -481,8 +517,10 @@ class DictPopup(QWidget):
     Dismisses on click outside.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, app_settings: QSettings, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
+        self.app_settings = app_settings
+        self._current_sentence = ""
         self.setMinimumWidth(320)
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
@@ -523,8 +561,9 @@ class DictPopup(QWidget):
 
     # ── Public ────────────────────────────────────────────────────────────────
 
-    def show_word(self, word: str, global_pos: "QPoint"):
+    def show_word(self, word: str, global_pos: "QPoint", sentence: str = ""):
         """Look up word, populate content, and show near global_pos."""
+        self._current_sentence = sentence
         self._populate(word)
         self._reposition(global_pos)
         self.show()
@@ -548,6 +587,15 @@ class DictPopup(QWidget):
             self._resize_to_content()
             return
 
+        anki_btn_style = """
+            QPushButton {
+                background: #4a3080; color: #ccc;
+                border: 1px solid #6a50a0; border-radius: 4px;
+                font-size: 8pt; padding: 2px 8px;
+            }
+            QPushButton:hover { background: #6a50c0; color: #fff; }
+        """
+
         for i, entry in enumerate(entries):
             if i > 0:
                 div = QFrame()
@@ -555,18 +603,42 @@ class DictPopup(QWidget):
                 div.setStyleSheet("color: #3a3a5a; background: #3a3a5a; border: none; max-height: 1px;")
                 self._lay.addWidget(div)
 
-            # Word + reading
+            reading_str = "・".join(entry["readings"][:4]) if entry["readings"] else ""
+
+            # Word + Anki button on the same row
+            header_row = QHBoxLayout()
+            header_row.setSpacing(8)
             word_lbl = QLabel(entry["word"])
             word_lbl.setFont(QFont("Noto Serif JP, serif", 20, QFont.Weight.Bold))
             word_lbl.setStyleSheet("color: #ffffff; border: none; background: transparent;")
             word_lbl.setWordWrap(True)
-            self._lay.addWidget(word_lbl)
+            header_row.addWidget(word_lbl, stretch=1)
 
-            if entry["readings"]:
-                reading = "・".join(entry["readings"][:4])
-                self._add_label(reading, size=12, colour="#93b4d4")
+            anki_btn = QPushButton("+ Anki")
+            anki_btn.setStyleSheet(anki_btn_style)
+            anki_btn.setToolTip("+ Anki  |  Ctrl+click to edit before adding")
+            _word    = entry["word"]
+            _reading = reading_str
+            _senses  = entry["senses"]
+            anki_btn.clicked.connect(
+                lambda checked, w=_word, r=_reading, ss=_senses, btn=anki_btn:
+                    self._handle_anki_click(
+                        w, r,
+                        "\n\n".join(f"{n+1}. {s}" for n, s in enumerate(ss[:6])),
+                        btn
+                    )
+            )
+            header_row.addWidget(anki_btn, alignment=Qt.AlignmentFlag.AlignTop)
 
-            # Definitions
+            header_container = QWidget()
+            header_container.setStyleSheet("background: transparent; border: none;")
+            header_container.setLayout(header_row)
+            self._lay.addWidget(header_container)
+
+            if reading_str:
+                self._add_label(reading_str, size=12, colour="#93b4d4")
+
+            # Definitions — plain numbered list, no per-sense buttons
             if entry["senses"]:
                 self._add_label("Definitions", size=8, colour="#666", bold=True)
                 for j, sense in enumerate(entry["senses"][:6]):
@@ -635,8 +707,6 @@ class DictPopup(QWidget):
         tako_btn.clicked.connect(
             lambda: webbrowser.open("https://takoboto.jp/?q=" + url_quote(word))
         )
-        # Placeholder slot for future AnkiConnect button
-        self._anki_slot = word
 
         row.addWidget(jisho_btn)
         row.addWidget(tako_btn)
@@ -646,6 +716,92 @@ class DictPopup(QWidget):
         container.setStyleSheet("background: transparent; border: none;")
         container.setLayout(row)
         self._lay.addWidget(container)
+
+    def _handle_anki_click(self, word: str, reading: str,
+                           definition: str, btn: "QPushButton"):
+        """
+        Normal click  → add directly.
+        Ctrl/Cmd click → open edit dialog first.
+        """
+        modifiers = QApplication.keyboardModifiers()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if modifiers & ctrl:
+            self._open_anki_edit_dialog(word, reading, definition)
+        else:
+            self._add_to_anki(word, reading, definition)
+
+    def _open_anki_edit_dialog(self, word: str, reading: str, definition: str):
+        """Open a dialog letting the user tweak card content before adding."""
+        dlg = AnkiEditDialog(
+            word, reading, definition,
+            self._current_sentence,
+            self.app_settings,
+            parent=self
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            d = dlg.get_values()
+            self._add_to_anki(d["word"], d["reading"], d["definition"],
+                              sentence_override=d["sentence"])
+
+    def _add_to_anki(self, word: str, reading: str, definition: str,
+                     sentence_override: str | None = None):
+        """Build field map from settings and call AnkiConnect addNote."""
+        s = self.app_settings
+        url   = s.value("anki/url",   "http://localhost:8765")
+        key   = s.value("anki/key",   "")
+        deck  = s.value("anki/deck",  "")
+        model = s.value("anki/model", "")
+
+        if not deck or not model:
+            self._show_toast("⚠ Configure Anki in Settings first.")
+            return
+
+        # Build fields dict from saved mapping
+        furigana = _make_furigana_html(word, reading)
+        source_map = {
+            "Word":       word,
+            "Reading":    reading,
+            "Furigana":   furigana,
+            "Definition": definition,
+            "Sentence":   sentence_override if sentence_override is not None else self._current_sentence,
+        }
+        fields = {}
+        # Iterate all keys under anki/field/
+        s.beginGroup("anki/field")
+        for field_name in s.childKeys():
+            source = s.value(field_name, "— skip —")
+            if source != "— skip —" and source in source_map:
+                fields[field_name] = source_map[source]
+        s.endGroup()
+
+        if not fields:
+            self._show_toast("⚠ No field mapping configured in Settings.")
+            return
+
+        try:
+            anki_add_note(url, key, deck, model, fields)
+            self._show_toast(f'✓ Added "{word}" to Anki')
+        except Exception as e:
+            self._show_toast(f"✗ Anki error: {str(e)[:60]}")
+
+    def _show_toast(self, message: str, duration_ms: int = 2500):
+        """Show a brief floating notification near the bottom of the popup."""
+        toast = QLabel(message, self)
+        toast.setStyleSheet("""
+            QLabel {
+                background: #2a2a3a; color: #eee;
+                border: 1px solid #5a5a8a; border-radius: 6px;
+                padding: 6px 12px; font-size: 9pt;
+            }
+        """)
+        toast.adjustSize()
+        # Centre horizontally, near the bottom
+        x = (self.width() - toast.width()) // 2
+        y = self.height() - toast.height() - 10
+        toast.move(x, y)
+        toast.show()
+        toast.raise_()
+        QTimer.singleShot(duration_ms, toast.deleteLater)
 
     def _resize_to_content(self):
         self._content.adjustSize()
@@ -813,7 +969,7 @@ class OCRPanel(QWidget):
         layout.addWidget(self.status)
 
         # Shared popup instance — reused across lookups
-        self._dict_popup = DictPopup()
+        self._dict_popup = None  # created in set_settings()
         self._last_hovered_word = ""  # tracks hover for context menu / shortcut
 
     # ── Segmentation ─────────────────────────────────────────────────────────
@@ -886,12 +1042,18 @@ class OCRPanel(QWidget):
         if word:
             self._show_dict_popup(word)
 
+    def set_settings(self, app_settings: QSettings):
+        """Called from TakoReader after settings are available."""
+        self._app_settings = app_settings
+        self._dict_popup = DictPopup(app_settings)
+
     def _show_dict_popup(self, word: str):
         """Look up word and show the floating dictionary popup."""
-        if not word:
+        if not word or self._dict_popup is None:
             return
+        sentence = " ".join(self._raw_texts)
         cursor_pos = QCursor.pos()
-        self._dict_popup.show_word(word, cursor_pos)
+        self._dict_popup.show_word(word, cursor_pos, sentence=sentence)
         self.status.setText(f"Looking up: {word}")
 
     def lookup_shortcut(self):
@@ -981,6 +1143,163 @@ class OCRPanel(QWidget):
         menu.exec(self.text_box.viewport().mapToGlobal(pos))
 
 
+# ─── AnkiConnect helper ──────────────────────────────────────────────────────
+
+def _anki_request(action: str, url: str, api_key: str = "", **params) -> dict:
+    """
+    Send a single AnkiConnect request.
+    Returns the parsed response dict, or raises on network/API error.
+    """
+    import urllib.request, json as _json
+    payload = {"action": action, "version": 6, "params": params}
+    if api_key:
+        payload["key"] = api_key
+    data = _json.dumps(payload).encode()
+    req  = urllib.request.Request(url, data=data,
+                                  headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        result = _json.loads(resp.read())
+    if result.get("error"):
+        raise RuntimeError(result["error"])
+    return result.get("result")
+
+
+def anki_test_connection(url: str, api_key: str = "") -> bool:
+    """Return True if AnkiConnect responds."""
+    try:
+        _anki_request("version", url, api_key)
+        return True
+    except Exception:
+        return False
+
+
+def anki_get_decks(url: str, api_key: str = "") -> list[str]:
+    try:
+        return sorted(_anki_request("deckNames", url, api_key))
+    except Exception:
+        return []
+
+
+def anki_get_note_types(url: str, api_key: str = "") -> list[str]:
+    try:
+        return sorted(_anki_request("modelNames", url, api_key))
+    except Exception:
+        return []
+
+
+def anki_get_fields(url: str, api_key: str, model_name: str) -> list[str]:
+    try:
+        return _anki_request("modelFieldNames", url, api_key,
+                              modelName=model_name)
+    except Exception:
+        return []
+
+
+def anki_add_note(url: str, api_key: str, deck: str, model: str,
+                  fields: dict, tags: list[str] | None = None) -> int | None:
+    """
+    Add a note to Anki. fields = {"Field Name": "value", ...}
+    Returns the new note ID, or None on failure.
+    """
+    try:
+        note = {
+            "deckName":  deck,
+            "modelName": model,
+            "fields":    fields,
+            "options":   {"allowDuplicate": False},
+            "tags":      tags or ["tako-reader"],
+        }
+        return _anki_request("addNote", url, api_key, note=note)
+    except Exception as e:
+        raise RuntimeError(str(e))
+
+
+# ─── Anki edit dialog ────────────────────────────────────────────────────────
+
+class AnkiEditDialog(QDialog):
+    """
+    Shown when the user Ctrl/Cmd-clicks "+ Anki".
+    Lets them edit word, reading, furigana, definition, and sentence
+    before the card is added.
+    """
+
+    def __init__(self, word: str, reading: str, definition: str,
+                 sentence: str, app_settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Card — Tako Reader")
+        self.setMinimumWidth(420)
+        self.setModal(True)
+        self.setStyleSheet("""
+            QDialog  { background: #1a1a1a; color: #e0e0e0; }
+            QLabel   { color: #aaa; font-size: 9pt; }
+            QTextEdit, QLineEdit {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 6px; font-size: 10pt;
+            }
+            QPushButton {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 5px;
+                padding: 5px 18px; font-size: 10pt;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+        """)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(10)
+
+        furigana_html = _make_furigana_html(word, reading)
+
+        fields = [
+            ("Word",       word,          False),
+            ("Reading",    reading,       False),
+            ("Furigana",   furigana_html, False),
+            ("Definition", definition,    True),
+            ("Sentence",   sentence,      True),
+        ]
+
+        self._editors: dict[str, QWidget] = {}
+        field_style = """
+            QLineEdit, QTextEdit {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 6px; font-size: 10pt;
+            }
+        """
+        for label, value, multiline in fields:
+            lbl = QLabel(label)
+            root.addWidget(lbl)
+            if multiline:
+                w = QTextEdit()
+                w.setPlainText(value)
+                w.setFixedHeight(72)
+                w.setStyleSheet(field_style)
+            else:
+                w = QLineEdit(value)
+                w.setStyleSheet(field_style)
+            root.addWidget(w)
+            self._editors[label] = w
+
+        # Buttons
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        root.addWidget(btn_box)
+
+    def get_values(self) -> dict[str, str]:
+        result = {}
+        for key, widget in self._editors.items():
+            if isinstance(widget, QTextEdit):
+                result[key.lower()] = widget.toPlainText()
+            else:
+                result[key.lower()] = widget.text()
+        return result
+
+
 # ─── Settings Dialog ─────────────────────────────────────────────────────────
 
 def _probe_cuda_devices() -> list[dict]:
@@ -1049,6 +1368,7 @@ class SettingsDialog(QDialog):
 
         self._build_general_section()
         self._build_ocr_section()
+        self._build_anki_section()
 
         self._content_lay.addStretch()
         scroll.setWidget(content)
@@ -1145,7 +1465,21 @@ class SettingsDialog(QDialog):
                 border: 1px solid #444; border-radius: 4px;
                 padding: 4px 8px; font-size: 10pt;
             }
-            QComboBox::drop-down { border: none; width: 20px; }
+            QComboBox::drop-down {
+                border-left: 1px solid #444;
+                width: 24px;
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                width: 0; height: 0;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #888;
+            }
+            QComboBox::drop-down:hover { background: #3a3a4a; }
+            QComboBox::down-arrow:hover { border-top-color: #ddd; }
             QComboBox QAbstractItemView {
                 background: #252525; color: #ddd;
                 selection-background-color: #3584e4;
@@ -1172,6 +1506,193 @@ class SettingsDialog(QDialog):
                 "CUDA (unavailable — see Troubleshooting in README)", "cpu"
             )
 
+    # ── Anki section ─────────────────────────────────────────────────────────
+
+    def _build_anki_section(self):
+        lay = self._section("Anki")
+
+        # Connection row
+        self.anki_url = QLineEdit()
+        self.anki_url.setPlaceholderText("http://localhost:8765")
+        self.anki_url.setStyleSheet("""
+            QLineEdit {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 8px; font-size: 10pt;
+            }
+        """)
+        self._row(lay, "AnkiConnect URL", self.anki_url)
+
+        self.anki_key = QLineEdit()
+        self.anki_key.setPlaceholderText("Leave blank if not set")
+        self.anki_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.anki_key.setStyleSheet(self.anki_url.styleSheet())
+        self._row(lay, "API Key", self.anki_key,
+                  hint="Only needed if you have configured an API key in AnkiConnect.")
+
+        # Connect button + status
+        connect_row = QHBoxLayout()
+        self._anki_status = QLabel("Not connected")
+        self._anki_status.setStyleSheet("color: #666; font-size: 9pt;")
+        connect_btn = QPushButton("Test Connection")
+        connect_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a; color: #ccc;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 12px; font-size: 9pt;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+        """)
+        connect_btn.clicked.connect(self._anki_connect)
+        connect_row.addWidget(self._anki_status, stretch=1)
+        connect_row.addWidget(connect_btn)
+        lay.addLayout(connect_row)
+
+        # Deck picker
+        self.anki_deck = QComboBox()
+        self.anki_deck.setEditable(True)
+        self.anki_deck.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 8px; font-size: 10pt;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #444; width: 24px;
+                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
+            }
+            QComboBox::down-arrow {
+                image: none; width: 0; height: 0;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #888;
+            }
+            QComboBox::drop-down:hover { background: #3a3a4a; }
+            QComboBox::down-arrow:hover { border-top-color: #ddd; }
+            QComboBox QAbstractItemView {
+                background: #252525; color: #ddd;
+                selection-background-color: #3584e4; border: 1px solid #3a3a3a;
+            }
+        """)
+        self._row(lay, "Deck", self.anki_deck)
+
+        # Note type picker
+        self.anki_model = QComboBox()
+        self.anki_model.setEditable(True)
+        self.anki_model.setStyleSheet(self.anki_deck.styleSheet())
+        self.anki_model.currentTextChanged.connect(self._anki_model_changed)
+        self._row(lay, "Note Type", self.anki_model)
+
+        # Field mapping — dynamically built when model changes
+        self._field_map_lay = QVBoxLayout()
+        self._field_map_lay.setSpacing(6)
+        self._field_widgets: dict[str, QComboBox] = {}  # field_name → combo
+        lay.addLayout(self._field_map_lay)
+
+        # Mapping hint
+        self._field_hint = QLabel("Connect to Anki to configure field mapping.")
+        self._field_hint.setStyleSheet("color: #666; font-size: 8pt;")
+        self._field_hint.setWordWrap(True)
+        lay.addWidget(self._field_hint)
+
+    def _anki_connect(self):
+        url     = self.anki_url.text().strip() or "http://localhost:8765"
+        api_key = self.anki_key.text().strip()
+
+        if not anki_test_connection(url, api_key):
+            self._anki_status.setText("✗ Could not connect — is Anki running?")
+            self._anki_status.setStyleSheet("color: #e74c3c; font-size: 9pt;")
+            return
+
+        self._anki_status.setText("✓ Connected")
+        self._anki_status.setStyleSheet("color: #2ecc71; font-size: 9pt;")
+
+        # Populate decks
+        decks = anki_get_decks(url, api_key)
+        self.anki_deck.clear()
+        self.anki_deck.addItems(decks)
+        saved_deck = self.app_settings.value("anki/deck", "")
+        if saved_deck in decks:
+            self.anki_deck.setCurrentText(saved_deck)
+
+        # Populate note types
+        models = anki_get_note_types(url, api_key)
+        self.anki_model.clear()
+        self.anki_model.addItems(models)
+        saved_model = self.app_settings.value("anki/model", "")
+        if saved_model in models:
+            self.anki_model.setCurrentText(saved_model)
+            self._anki_model_changed(saved_model)
+
+    def _anki_model_changed(self, model_name: str):
+        """Rebuild the field mapping rows for the selected note type."""
+        url     = self.anki_url.text().strip() or "http://localhost:8765"
+        api_key = self.anki_key.text().strip()
+        fields  = anki_get_fields(url, api_key, model_name)
+
+        # Clear existing mapping widgets
+        while self._field_map_lay.count():
+            item = self._field_map_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._field_widgets.clear()
+
+        if not fields:
+            self._field_hint.setText("Connect to Anki to configure field mapping.")
+            return
+
+        self._field_hint.setText(
+            "Map each Anki field to Tako Reader data. "
+            "Fields set to '— skip —' will be left blank."
+        )
+
+        SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence"]
+        combo_style = """
+            QComboBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 3px 6px; font-size: 9pt;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #444; width: 22px;
+                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
+            }
+            QComboBox::down-arrow {
+                image: none; width: 0; height: 0;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #888;
+            }
+            QComboBox::drop-down:hover { background: #3a3a4a; }
+            QComboBox::down-arrow:hover { border-top-color: #ddd; }
+            QComboBox QAbstractItemView {
+                background: #252525; color: #ddd;
+                selection-background-color: #3584e4;
+            }
+        """
+
+        for field in fields:
+            row = QHBoxLayout()
+            lbl = QLabel(field)
+            lbl.setFixedWidth(130)
+            lbl.setStyleSheet("color: #bbb; font-size: 9pt;")
+            combo = QComboBox()
+            combo.addItems(SOURCES)
+            combo.setStyleSheet(combo_style)
+
+            # Restore saved mapping
+            saved = self.app_settings.value(f"anki/field/{field}", "— skip —")
+            if saved in SOURCES:
+                combo.setCurrentText(saved)
+
+            row.addWidget(lbl)
+            row.addWidget(combo, stretch=1)
+            container = QWidget()
+            container.setStyleSheet("background: transparent; border: none;")
+            container.setLayout(row)
+            self._field_map_lay.addWidget(container)
+            self._field_widgets[field] = combo
+
     # ── Load / Save ───────────────────────────────────────────────────────────
 
     def _load_values(self):
@@ -1187,11 +1708,26 @@ class SettingsDialog(QDialog):
                 self.ocr_device_combo.setCurrentIndex(i)
                 break
 
+        # Anki — just restore URL and key; decks/fields load on connect
+        self.anki_url.setText(
+            self.app_settings.value("anki/url", "http://localhost:8765")
+        )
+        self.anki_key.setText(self.app_settings.value("anki/key", ""))
+
     def _save(self):
         """Persist all values to QSettings and close."""
         self.app_settings.setValue("general/session_memory",
                                    self.session_memory_check.isChecked())
         self.app_settings.setValue("ocr/device", self.ocr_device_combo.currentData())
+
+        # Anki
+        self.app_settings.setValue("anki/url",   self.anki_url.text().strip())
+        self.app_settings.setValue("anki/key",   self.anki_key.text().strip())
+        self.app_settings.setValue("anki/deck",  self.anki_deck.currentText())
+        self.app_settings.setValue("anki/model", self.anki_model.currentText())
+        for field, combo in self._field_widgets.items():
+            self.app_settings.setValue(f"anki/field/{field}", combo.currentText())
+
         self.accept()
 
     # ── Style ─────────────────────────────────────────────────────────────────
@@ -1306,6 +1842,8 @@ class TakoReader(QMainWindow):
         self._apply_dark_theme()
         self._restore_settings()
         self.setAcceptDrops(True)
+        # Pass settings to OCR panel so DictPopup has access to Anki config
+        self.ocr_panel.set_settings(self._settings)
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI construction
