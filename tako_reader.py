@@ -2221,15 +2221,36 @@ class TakoReader(QMainWindow):
         self.btn_next  = _nav_btn("Next  ▶", self.next_page,                    "nav-next")
         self.btn_last  = _nav_btn("⏭", lambda: self.go_to_page(len(self._pages) - 1), "nav-last")
 
+        # Stacked widget: index 0 = label, index 1 = editor
+        from PyQt6.QtWidgets import QStackedWidget
+        self._page_nav_stack = QStackedWidget()
+        self._page_nav_stack.setFixedWidth(90)
+
         self.page_label = QLabel("— / —")
         self.page_label.setStyleSheet("color: #aaa; font-size: 10pt;")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_label.setMinimumWidth(80)
+        self.page_label.setToolTip("Click to jump to page")
+        self.page_label.mousePressEvent = lambda _: self._start_page_jump()
+
+        self.page_edit = QLineEdit()
+        self.page_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_edit.setStyleSheet("""
+            QLineEdit {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #3584e4; border-radius: 4px;
+                font-size: 10pt; padding: 2px;
+            }
+        """)
+        self.page_edit.returnPressed.connect(self._commit_page_jump)
+        self.page_edit.installEventFilter(self)
+
+        self._page_nav_stack.addWidget(self.page_label)   # index 0
+        self._page_nav_stack.addWidget(self.page_edit)     # index 1
 
         lay.addWidget(self.btn_first)
         lay.addWidget(self.btn_prev)
         lay.addStretch()
-        lay.addWidget(self.page_label)
+        lay.addWidget(self._page_nav_stack)
         lay.addStretch()
         lay.addWidget(self.btn_next)
         lay.addWidget(self.btn_last)
@@ -2293,6 +2314,9 @@ class TakoReader(QMainWindow):
         next_a   = QAction("Next Page",     self, shortcut="Right")
         next_a.triggered.connect(self.next_page)
         nav_menu.addActions([prev_a, next_a])
+        jump_act = QAction("Jump to Page…", self, shortcut="Ctrl+G")
+        jump_act.triggered.connect(self._start_page_jump)
+        nav_menu.addAction(jump_act)
         nav_menu.addSeparator()
         bm_toggle = QAction("Toggle Bookmark", self, shortcut="Ctrl+B")
         bm_toggle.triggered.connect(self._toggle_bookmark)
@@ -2598,6 +2622,41 @@ class TakoReader(QMainWindow):
             self._menu_single_act.setChecked(mode == "single")
             self._menu_double_act.setChecked(mode == "double")
 
+    def _start_page_jump(self):
+        """Switch page label to edit mode."""
+        if not self._pages:
+            return
+        self.page_edit.setText(str(self._current + 1))
+        self.page_edit.selectAll()
+        self._page_nav_stack.setCurrentIndex(1)
+        self.page_edit.setFocus()
+
+    def _commit_page_jump(self):
+        """Parse the entered page number, jump, restore label."""
+        text = self.page_edit.text().strip()
+        self._page_nav_stack.setCurrentIndex(0)
+        self.page_label.setFocus()
+        if not text or not self._pages:
+            return
+        try:
+            target = int(text) - 1  # convert 1-based to 0-based
+        except ValueError:
+            return
+        # Clamp: out-of-range goes to first or last
+        target = max(0, min(target, len(self._pages) - 1))
+        self.go_to_page(target)
+
+    def eventFilter(self, obj, event):
+        """Pressing Escape while the page edit is open cancels the jump."""
+        from PyQt6.QtCore import QEvent
+        if obj is self.page_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self._page_nav_stack.setCurrentIndex(0)
+                return True
+            if event.type() == QEvent.Type.FocusOut:
+                self._page_nav_stack.setCurrentIndex(0)
+        return super().eventFilter(obj, event)
+
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
         self.statusBar().showMessage(
@@ -2804,6 +2863,10 @@ class TakoReader(QMainWindow):
         self._toggle_thumbnails(thumb_vis)
         self._toggle_ocr_panel(ocr_vis)
 
+        # Page mode
+        page_mode = self._settings.value("ui/page_mode", "single")
+        self._set_page_mode(page_mode)
+
         # Segment toggle
         seg_on = self._settings.value("ui/segment_on", False, type=bool)
         self.ocr_panel.seg_check.setChecked(seg_on)
@@ -2854,6 +2917,7 @@ class TakoReader(QMainWindow):
         self._settings.setValue("ui/thumb_visible",  self.thumb_list.isVisible())
         self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())
         self._settings.setValue("ui/segment_on",     self.ocr_panel.seg_check.isChecked())
+        self._settings.setValue("ui/page_mode",      self._page_mode)
         OCRProcessManager.shutdown_all()
         super().closeEvent(event)
 
