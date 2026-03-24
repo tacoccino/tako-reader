@@ -1870,6 +1870,157 @@ class SettingsDialog(QDialog):
         """)
 
 
+# ─── Bookmark Popup ──────────────────────────────────────────────
+
+class BookmarkPopup(QWidget):
+    navigate         = pyqtSignal(int)
+    rename_requested = pyqtSignal(int, str)
+    remove_requested = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setMinimumWidth(340)
+        self.setMaximumWidth(420)
+        self.setMaximumHeight(480)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("""
+            QWidget {
+                background: #252535; color: #e0e0e0;
+                border: 1px solid #3a3a5a; border-radius: 8px;
+            }
+            QLabel   { border: none; background: transparent; }
+            QLineEdit {
+                background: #1e1e2e; color: #ddd;
+                border: 1px solid #3a3a5a; border-radius: 4px;
+                padding: 2px 6px; font-size: 9pt;
+            }
+            QPushButton {
+                background: #2a2a3a; color: #ccc;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 3px 10px; font-size: 9pt;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+            QScrollBar:vertical { background: #252535; width: 6px; }
+            QScrollBar::handle:vertical { background: #4a4a6a; border-radius: 3px; }
+        """)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet(
+            "background: #1e1e2e; border-bottom: 1px solid #3a3a5a;"
+            " border-top-left-radius: 8px; border-top-right-radius: 8px;"
+        )
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(14, 10, 14, 10)
+        title = QLabel("Bookmarks")
+        title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        title.setStyleSheet("color: #fff; background: transparent; border: none;")
+        hl.addWidget(title)
+        outer.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._content = QWidget()
+        self._content.setStyleSheet("background: transparent; border: none;")
+        self._list_lay = QVBoxLayout(self._content)
+        self._list_lay.setContentsMargins(12, 10, 12, 10)
+        self._list_lay.setSpacing(6)
+        scroll.setWidget(self._content)
+        outer.addWidget(scroll, stretch=1)
+
+    def show_at(self, global_pos, bookmarks: list, current_page: int):
+        self._populate(bookmarks, current_page)
+        self._reposition(global_pos)
+        self.show()
+
+    def _populate(self, bookmarks: list, current_page: int):
+        while self._list_lay.count():
+            item = self._list_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not bookmarks:
+            empty = QLabel("No bookmarks yet.\nUse the bookmark button to add one.")
+            empty.setStyleSheet("color: #666; font-size: 9pt; background: transparent; border: none;")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._list_lay.addWidget(empty)
+        else:
+            for bm in sorted(bookmarks, key=lambda b: b["page"]):
+                self._list_lay.addWidget(self._make_row(bm, current_page))
+        self._list_lay.addStretch()
+        self._resize()
+
+    def _make_row(self, bm: dict, current_page: int) -> QWidget:
+        page = bm["page"]
+        name = bm.get("name", f"Page {page + 1}")
+        card = QWidget()
+        card.setStyleSheet(
+            "background: #2a2a4a; border: 1px solid #4a4a7a; border-radius: 6px;"
+            if page == current_page else
+            "background: #1e1e2e; border: 1px solid #3a3a5a; border-radius: 6px;"
+        )
+        cl = QHBoxLayout(card)
+        cl.setContentsMargins(10, 8, 10, 8)
+        cl.setSpacing(8)
+
+        page_lbl = QLabel(f"p.{page + 1}")
+        page_lbl.setFixedWidth(36)
+        page_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_lbl.setStyleSheet(
+            "color: #3584e4; font-size: 8pt; font-weight: bold;"
+            " background: transparent; border: none;"
+        )
+        cl.addWidget(page_lbl)
+
+        name_edit = QLineEdit(name)
+        name_edit.setPlaceholderText("Bookmark name…")
+        name_edit.editingFinished.connect(
+            lambda p=page, e=name_edit: self.rename_requested.emit(p, e.text())
+        )
+        cl.addWidget(name_edit, stretch=1)
+
+        go_btn = QPushButton("Go")
+        go_btn.setFixedWidth(36)
+        go_btn.clicked.connect(lambda _, p=page: self._go(p))
+        cl.addWidget(go_btn)
+
+        del_btn = QPushButton("✕")
+        del_btn.setFixedWidth(28)
+        del_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent; color: #888;
+                border: none; font-size: 10pt; padding: 0;
+            }
+            QPushButton:hover { color: #e74c3c; background: transparent; }
+        """)
+        del_btn.clicked.connect(lambda _, p=page: self.remove_requested.emit(p))
+        cl.addWidget(del_btn)
+        return card
+
+    def _go(self, page: int):
+        self.navigate.emit(page)
+        self.hide()
+
+    def _resize(self):
+        self._content.adjustSize()
+        h = min(self._content.sizeHint().height() + 56, self.maximumHeight())
+        self.resize(self.width(), max(h, 120))
+
+    def _reposition(self, pos):
+        screen = QGuiApplication.screenAt(pos)
+        sg = screen.availableGeometry() if screen \
+             else QGuiApplication.primaryScreen().availableGeometry()
+        x = pos.x() - self.width() // 2
+        y = pos.y() + 8
+        if x + self.width()  > sg.right():  x = sg.right()  - self.width()  - 4
+        if x < sg.left():                   x = sg.left()   + 4
+        if y + self.height() > sg.bottom(): y = pos.y() - self.height() - 8
+        self.move(x, y)
+
+
 # ─── Thumbnail Strip ──────────────────────────────────────────────────────────
 
 class ThumbnailList(QListWidget):
@@ -1966,6 +2117,7 @@ class TakoReader(QMainWindow):
         self._ocr_worker: OCRWorker | None = None
         self._settings                     = QSettings("TakoReader", "TakoReaderJP")
         self._reading_mode                 = "rtl"
+        self._current_file                 = ""
 
         self._build_ui()
         self._build_menu()
@@ -1975,6 +2127,10 @@ class TakoReader(QMainWindow):
         self.setAcceptDrops(True)
         # Pass settings to OCR panel so DictPopup has access to Anki config
         self.ocr_panel.set_settings(self._settings)
+        # Bookmark state
+        self._bookmarks: list[dict] = []
+        self._bookmark_popup = BookmarkPopup(self)
+        self._bookmark_popup.navigate.connect(self.go_to_page)
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI construction
@@ -2124,6 +2280,12 @@ class TakoReader(QMainWindow):
         next_a   = QAction("Next Page",     self, shortcut="Right")
         next_a.triggered.connect(self.next_page)
         nav_menu.addActions([prev_a, next_a])
+        nav_menu.addSeparator()
+        bm_toggle = QAction("Toggle Bookmark", self, shortcut="Ctrl+B")
+        bm_toggle.triggered.connect(self._toggle_bookmark)
+        bm_list   = QAction("Show Bookmarks…", self, shortcut="Ctrl+Shift+B")
+        bm_list.triggered.connect(self._show_bookmarks_popup)
+        nav_menu.addActions([bm_toggle, bm_list])
 
         ocr_menu = mb.addMenu("OCR")
         self.act_ocr_mode = QAction("OCR Selection Mode", self,
@@ -2164,20 +2326,18 @@ class TakoReader(QMainWindow):
         """
 
         def _btn(label, slot, checkable=False, icon_name=None, tooltip=None):
-            b = QPushButton()
+            b = QPushButton(label)
             b.setCheckable(checkable)
             b.setStyleSheet(btn_style)
             b.clicked.connect(slot)
-            ic = load_icon(icon_name) if icon_name else QIcon()
-            if not ic.isNull():
-                b.setIcon(ic)
-                b.setIconSize(QSize(16, 16))
-                if tooltip:
-                    b.setToolTip(tooltip)
-            else:
-                b.setText(label)
-                if tooltip:
-                    b.setToolTip(tooltip)
+            if icon_name:
+                ic = load_icon(icon_name)
+                if not ic.isNull():
+                    b.setIcon(ic)
+                    b.setIconSize(QSize(16, 16))
+                    b.setText("")
+            if tooltip:
+                b.setToolTip(tooltip)
             return b
 
         def _sep():
@@ -2188,8 +2348,7 @@ class TakoReader(QMainWindow):
             return f
 
         # ── Left side: thumbnails toggle ──
-        self.tb_thumb_btn = _btn("‹‹", self._toggle_thumbnails, checkable=True,
-                                 icon_name="panel-thumbnails",
+        self.tb_thumb_btn = _btn("", self._toggle_thumbnails, checkable=True,
                                  tooltip="Toggle Thumbnails (Ctrl+Shift+T)")
         self.tb_thumb_btn.setChecked(True)
         lay.addWidget(self.tb_thumb_btn)
@@ -2217,11 +2376,19 @@ class TakoReader(QMainWindow):
                             icon_name="ocr", tooltip="OCR Selection Mode (Ctrl+Shift+O)")
         lay.addWidget(self.ocr_btn)
 
-        # ── Right side: OCR panel toggle ──
+        # ── Right side: bookmarks + OCR panel toggle ──
         lay.addStretch()
         lay.addWidget(_sep())
-        self.tb_ocr_btn = _btn("››", self._toggle_ocr_panel, checkable=True,
-                               icon_name="panel-ocr",
+        self.tb_bookmark_btn = _btn("", self._toggle_bookmark, checkable=True,
+                                    icon_name="bookmark-off",
+                                    tooltip="Bookmark this page (Ctrl+B)")
+        lay.addWidget(self.tb_bookmark_btn)
+        self.tb_bookmarks_btn = _btn("", self._show_bookmarks_popup,
+                                     icon_name="bookmarks",
+                                     tooltip="Show all bookmarks (Ctrl+Shift+B)")
+        lay.addWidget(self.tb_bookmarks_btn)
+        lay.addWidget(_sep())
+        self.tb_ocr_btn = _btn("", self._toggle_ocr_panel, checkable=True,
                                tooltip="Toggle OCR Panel (Ctrl+Shift+P)")
         self.tb_ocr_btn.setChecked(True)
         lay.addWidget(self.tb_ocr_btn)
@@ -2292,6 +2459,8 @@ class TakoReader(QMainWindow):
         self._settings.setValue("last_dir", str(Path(path).parent))
 
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
+        self._current_file = str(Path(path).resolve())
+        self._bookmarks    = self._load_bookmarks()
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
@@ -2315,6 +2484,8 @@ class TakoReader(QMainWindow):
         self.btn_first.setEnabled(index > 0)
         self.btn_last.setEnabled(index < len(self._pages) - 1)
         self._save_session_page(index)
+        if hasattr(self, "tb_bookmark_btn"):
+            self._update_bookmark_btn()
 
     def prev_page(self):
         self.go_to_page(self._current + (1 if self._reading_mode == "rtl" else -1))
@@ -2328,6 +2499,11 @@ class TakoReader(QMainWindow):
         self.thumb_list.setVisible(checked)
         self.act_thumbnails.setChecked(checked)
         self.tb_thumb_btn.setChecked(checked)
+        ic = load_icon("panel-thumbnails-hide" if checked else "panel-thumbnails-show")
+        if not ic.isNull():
+            self.tb_thumb_btn.setIcon(ic)
+        else:
+            self.tb_thumb_btn.setText("‹‹" if checked else "››")
 
     def _toggle_ocr_panel(self, checked: bool | None = None):
         if checked is None:
@@ -2335,6 +2511,11 @@ class TakoReader(QMainWindow):
         self.ocr_panel.setVisible(checked)
         self.act_ocr_panel.setChecked(checked)
         self.tb_ocr_btn.setChecked(checked)
+        ic = load_icon("panel-ocr-hide" if checked else "panel-ocr-show")
+        if not ic.isNull():
+            self.tb_ocr_btn.setIcon(ic)
+        else:
+            self.tb_ocr_btn.setText("‹‹" if checked else "››")
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
@@ -2454,6 +2635,80 @@ class TakoReader(QMainWindow):
         """)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Bookmarks
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _bm_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"bookmarks/{h}"
+
+    def _load_bookmarks(self) -> list:
+        if not self._current_file:
+            return []
+        import json as _json
+        raw = self._settings.value(self._bm_key(), "[]")
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return []
+
+    def _save_bookmarks(self):
+        import json as _json
+        self._settings.setValue(self._bm_key(), _json.dumps(self._bookmarks))
+
+    def _page_is_bookmarked(self) -> bool:
+        return any(b["page"] == self._current for b in self._bookmarks)
+
+    def _toggle_bookmark(self):
+        if not self._pages:
+            return
+        if self._page_is_bookmarked():
+            self._bookmarks = [b for b in self._bookmarks
+                               if b["page"] != self._current]
+        else:
+            self._bookmarks.append({
+                "page": self._current,
+                "name": f"Page {self._current + 1}",
+            })
+        self._save_bookmarks()
+        self._update_bookmark_btn()
+
+    def _update_bookmark_btn(self):
+        on = self._page_is_bookmarked()
+        self.tb_bookmark_btn.setChecked(on)
+        ic = load_icon("bookmark-on" if on else "bookmark-off")
+        if not ic.isNull():
+            self.tb_bookmark_btn.setIcon(ic)
+            self.tb_bookmark_btn.setIconSize(QSize(16, 16))
+
+    def _show_bookmarks_popup(self):
+        btn_geo = self.tb_bookmarks_btn.geometry()
+        btn_pos = self.tb_bookmarks_btn.mapToGlobal(
+            QPoint(btn_geo.width() // 2, btn_geo.height())
+        )
+        self._bookmark_popup.rename_requested.connect(self._on_bookmark_rename)
+        self._bookmark_popup.remove_requested.connect(self._on_bookmark_remove)
+        self._bookmark_popup.show_at(btn_pos, list(self._bookmarks), self._current)
+
+    def _on_bookmark_rename(self, page: int, name: str):
+        for bm in self._bookmarks:
+            if bm["page"] == page:
+                bm["name"] = name
+                break
+        self._save_bookmarks()
+
+    def _on_bookmark_remove(self, page: int):
+        self._bookmarks = [b for b in self._bookmarks if b["page"] != page]
+        self._save_bookmarks()
+        self._update_bookmark_btn()
+        btn_geo = self.tb_bookmarks_btn.geometry()
+        btn_pos = self.tb_bookmarks_btn.mapToGlobal(
+            QPoint(btn_geo.width() // 2, btn_geo.height())
+        )
+        self._bookmark_popup.show_at(btn_pos, list(self._bookmarks), self._current)
+
     # Settings persistence
     # ─────────────────────────────────────────────────────────────────────────
 
