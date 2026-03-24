@@ -2118,6 +2118,7 @@ class TakoReader(QMainWindow):
         self._settings                     = QSettings("TakoReader", "TakoReaderJP")
         self._reading_mode                 = "rtl"
         self._current_file                 = ""
+        self._page_mode                    = "single"  # "single" | "double"
 
         self._build_ui()
         self._build_menu()
@@ -2270,6 +2271,18 @@ class TakoReader(QMainWindow):
 
         view_menu.addActions([fit_w, fit_p, zoom_in, zoom_out])
         view_menu.addSeparator()
+        single_act = QAction("Single Page", self, checkable=True, checked=True)
+        double_act = QAction("Double Page", self, checkable=True)
+        single_act.triggered.connect(lambda: (self._set_page_mode("single"),
+                                              single_act.setChecked(True),
+                                              double_act.setChecked(False)))
+        double_act.triggered.connect(lambda: (self._set_page_mode("double"),
+                                              double_act.setChecked(True),
+                                              single_act.setChecked(False)))
+        self._menu_single_act = single_act
+        self._menu_double_act = double_act
+        view_menu.addActions([single_act, double_act])
+        view_menu.addSeparator()
         view_menu.addActions([self.act_thumbnails, self.act_ocr_panel])
         view_menu.addSeparator()
         view_menu.addAction(rtl_act)
@@ -2378,6 +2391,39 @@ class TakoReader(QMainWindow):
 
         # ── Right side: bookmarks + OCR panel toggle ──
         lay.addStretch()
+        page_mode_combo = QComboBox()
+        page_mode_combo.addItem("Single Page", "single")
+        page_mode_combo.addItem("Double Page", "double")
+        page_mode_combo.setFixedWidth(110)
+        page_mode_combo.setStyleSheet("""
+            QComboBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 2px 6px; font-size: 9pt;
+            }
+            QComboBox::drop-down {
+                border-left: 1px solid #444; width: 20px;
+                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
+            }
+            QComboBox::down-arrow {
+                image: none; width: 0; height: 0;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #888;
+            }
+            QComboBox::drop-down:hover { background: #3a3a4a; }
+            QComboBox::down-arrow:hover { border-top-color: #ddd; }
+            QComboBox QAbstractItemView {
+                background: #252525; color: #ddd;
+                selection-background-color: #3584e4;
+            }
+        """)
+        page_mode_combo.currentIndexChanged.connect(
+            lambda: self._set_page_mode(page_mode_combo.currentData())
+        )
+        self._page_mode_combo = page_mode_combo
+        lay.addWidget(page_mode_combo)
+        lay.addWidget(_sep())
         lay.addWidget(_sep())
         self.tb_bookmark_btn = _btn("", self._toggle_bookmark, checkable=True,
                                     icon_name="bookmark-off",
@@ -2471,12 +2517,29 @@ class TakoReader(QMainWindow):
     # Navigation
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _get_display_pixmap(self, index: int) -> QPixmap:
+        """Return a single or side-by-side double-page pixmap."""
+        px1 = self._pages[index]
+        if self._page_mode != "double" or index + 1 >= len(self._pages):
+            return px1
+        px2 = self._pages[index + 1]
+        # Stitch: in RTL mode page order is right-to-left
+        left, right = (px2, px1) if self._reading_mode == "rtl" else (px1, px2)
+        h = max(left.height(), right.height())
+        combined = QPixmap(left.width() + right.width(), h)
+        combined.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(combined)
+        painter.drawPixmap(0,            (h - left.height())  // 2, left)
+        painter.drawPixmap(left.width(), (h - right.height()) // 2, right)
+        painter.end()
+        return combined
+
     def go_to_page(self, index: int):
         if not self._pages:
             return
         index = max(0, min(index, len(self._pages) - 1))
         self._current = index
-        self.page_view.set_pixmap(self._pages[index])
+        self.page_view.set_pixmap(self._get_display_pixmap(index))
         self.thumb_list.select_page(index)
         self.page_label.setText(f"{index+1} / {len(self._pages)}")
         self.btn_prev.setEnabled(index > 0)
@@ -2488,10 +2551,12 @@ class TakoReader(QMainWindow):
             self._update_bookmark_btn()
 
     def prev_page(self):
-        self.go_to_page(self._current + (1 if self._reading_mode == "rtl" else -1))
+        step = 2 if self._page_mode == "double" else 1
+        self.go_to_page(self._current + (step if self._reading_mode == "rtl" else -step))
 
     def next_page(self):
-        self.go_to_page(self._current + (-1 if self._reading_mode == "rtl" else 1))
+        step = 2 if self._page_mode == "double" else 1
+        self.go_to_page(self._current + (-step if self._reading_mode == "rtl" else step))
 
     def _toggle_thumbnails(self, checked: bool | None = None):
         if checked is None:
@@ -2516,6 +2581,22 @@ class TakoReader(QMainWindow):
             self.tb_ocr_btn.setIcon(ic)
         else:
             self.tb_ocr_btn.setText("‹‹" if checked else "››")
+
+    def _set_page_mode(self, mode: str):
+        self._page_mode = mode
+        if self._pages:
+            self.go_to_page(self._current)
+        self.statusBar().showMessage(f"Page mode: {mode.capitalize()}", 2000)
+        # Sync toolbar combo
+        if hasattr(self, "_page_mode_combo"):
+            idx = 1 if mode == "double" else 0
+            self._page_mode_combo.blockSignals(True)
+            self._page_mode_combo.setCurrentIndex(idx)
+            self._page_mode_combo.blockSignals(False)
+        # Sync menu actions
+        if hasattr(self, "_menu_single_act"):
+            self._menu_single_act.setChecked(mode == "single")
+            self._menu_double_act.setChecked(mode == "double")
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
