@@ -1145,8 +1145,17 @@ class OCRPanel(QWidget):
 
         # ── Header ──
         header_row = QHBoxLayout()
-        title = QLabel("📖 OCR / Text")
-        title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        header_row.setSpacing(6)
+
+        self.ocr_indicator = QLabel("⬤")
+        self.ocr_indicator.setToolTip("OCR status: idle")
+        self.ocr_indicator.setStyleSheet("color: #444; font-size: 8pt;")
+        self.ocr_indicator.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(self.ocr_indicator)
+
+        title = QLabel("OCR / Text")
+        title.setStyleSheet("color: #888; font-size: 9pt;")
+        title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         header_row.addWidget(title, stretch=1)
 
         self.seg_check = QCheckBox("Segment")
@@ -1265,6 +1274,22 @@ class OCRPanel(QWidget):
     def set_text(self, text: str):
         self._add_card(text)
         self.status.setText("✓ OCR complete")
+
+    def set_ocr_state(self, state: str):
+        """
+        Update the OCR indicator in the panel header.
+        state: "idle" | "loading" | "ready" | "error"
+        """
+        styles = {
+            "idle":    ("⬤", "#444",    "OCR status: idle"),
+            "loading": ("⬤", "#e6a817", "OCR model loading…"),
+            "ready":   ("⬤", "#2ecc71", "OCR model ready"),
+            "error":   ("⬤", "#e74c3c", "OCR failed to load"),
+        }
+        dot, colour, tip = styles.get(state, styles["idle"])
+        self.ocr_indicator.setText(dot)
+        self.ocr_indicator.setStyleSheet(f"color: {colour}; font-size: 8pt;")
+        self.ocr_indicator.setToolTip(tip)
 
     def set_status(self, msg: str):
         self.status.setText(msg)
@@ -2835,10 +2860,20 @@ class TakoReader(QMainWindow):
         if self._ocr_worker and self._ocr_worker.isRunning():
             return
         device = self._settings.value("ocr/device", "cpu")
+        # If the process isn't alive yet, this is a lazy first load
+        mgr = OCRProcessManager.get(device)
+        if not mgr.is_alive():
+            self.ocr_panel.set_ocr_state("loading")
         self.ocr_panel.set_status(f"⏳ Running OCR on {device}…")
         self._ocr_worker = OCRWorker(image, rect, device=device)
         self._ocr_worker.result_ready.connect(self.ocr_panel.set_text)
+        self._ocr_worker.result_ready.connect(
+            lambda _: self.ocr_panel.set_ocr_state("ready")
+        )
         self._ocr_worker.error_occurred.connect(self.ocr_panel.set_status)
+        self._ocr_worker.error_occurred.connect(
+            lambda _: self.ocr_panel.set_ocr_state("error")
+        )
         self._ocr_worker.start()
 
     def open_settings(self):
@@ -3033,18 +3068,19 @@ class TakoReader(QMainWindow):
             return
         device = self._settings.value("ocr/device", "cpu")
         self.statusBar().showMessage("⏳ Pre-loading OCR model…")
+        self.ocr_panel.set_ocr_state("loading")
         self._warmup_worker = OCRWarmupWorker(device)
-        self._warmup_worker.ready.connect(
-            lambda dev: self.statusBar().showMessage(
-                f"✓ OCR model ready on {dev}  🐙", 4000
-            )
-        )
-        self._warmup_worker.failed.connect(
-            lambda err: self.statusBar().showMessage(
-                f"⚠ OCR warmup failed: {err}", 6000
-            )
-        )
+        self._warmup_worker.ready.connect(self._on_ocr_ready)
+        self._warmup_worker.failed.connect(self._on_ocr_failed)
         self._warmup_worker.start()
+
+    def _on_ocr_ready(self, dev: str):
+        self.ocr_panel.set_ocr_state("ready")
+        self.statusBar().showMessage(f"✓ OCR model ready on {dev}  🐙", 4000)
+
+    def _on_ocr_failed(self, err: str):
+        self.ocr_panel.set_ocr_state("error")
+        self.statusBar().showMessage(f"⚠ OCR warmup failed: {err}", 6000)
 
     def _save_session_page(self, index: int):
         """Persist the current page index (only when session memory is on)."""
