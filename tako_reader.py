@@ -1158,18 +1158,20 @@ class OCRPanel(QWidget):
         title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         header_row.addWidget(title, stretch=1)
 
-        self.seg_check = QCheckBox("Segment")
+        self.seg_check = QPushButton("Segment")
+        self.seg_check.setCheckable(True)
         self.seg_check.setChecked(False)
         self.seg_check.setToolTip("Tokenise text into words.\nClick a word to look it up.")
         self.seg_check.setStyleSheet("""
-            QCheckBox { color: #888; font-size: 9pt; }
-            QCheckBox::indicator {
-                width: 14px; height: 14px;
-                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
+            QPushButton {
+                background: transparent; color: #666;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 2px 8px; font-size: 9pt;
             }
-            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
+            QPushButton:hover   { color: #aaa; border-color: #666; }
+            QPushButton:checked { background: #3584e4; color: #fff; border-color: #3584e4; }
         """)
-        self.seg_check.stateChanged.connect(self._on_seg_toggled)
+        self.seg_check.clicked.connect(self._on_seg_toggled)
         header_row.addWidget(self.seg_check)
         layout.addLayout(header_row)
 
@@ -2436,14 +2438,32 @@ class TakoReader(QMainWindow):
     def _build_menu(self):
         mb = self.main_menu
 
+        # ── Tako Reader app menu ──
+        app_menu = mb.addMenu("Tako Reader")
+        about_act = QAction("About Tako Reader", self)
+        about_act.triggered.connect(self._show_about)
+        prefs_act = QAction("Preferences…", self, shortcut="Ctrl+,")
+        prefs_act.triggered.connect(self.open_settings)
+        app_menu.addAction(about_act)
+        app_menu.addSeparator()
+        app_menu.addAction(prefs_act)
+        app_menu.addSeparator()
+        quit_act_app = QAction("Quit", self, shortcut="Ctrl+Q")
+        quit_act_app.triggered.connect(self.close)
+        app_menu.addAction(quit_act_app)
+
         file_menu = mb.addMenu("File")
         open_act  = QAction("Open…",        self, shortcut="Ctrl+O")
         open_act.triggered.connect(self.open_file)
         open_dir  = QAction("Open Folder…", self)
         open_dir.triggered.connect(self.open_folder)
+        close_act = QAction("Close",        self, shortcut="Ctrl+W")
+        close_act.triggered.connect(self.close_file)
         quit_act  = QAction("Quit",         self, shortcut="Ctrl+Q")
         quit_act.triggered.connect(self.close)
         file_menu.addActions([open_act, open_dir])
+        file_menu.addSeparator()
+        file_menu.addAction(close_act)
         file_menu.addSeparator()
         file_menu.addAction(quit_act)
 
@@ -2514,11 +2534,7 @@ class TakoReader(QMainWindow):
         dict_act.triggered.connect(lambda: self.ocr_panel.lookup_shortcut())
         ocr_menu.addAction(dict_act)
 
-        # Settings menu
-        settings_menu = mb.addMenu("Settings")
-        prefs_act = QAction("Preferences…", self, shortcut="Ctrl+,")
-        prefs_act.triggered.connect(self.open_settings)
-        settings_menu.addAction(prefs_act)
+
 
     def _build_toolbar(self) -> QWidget:
         """Returns a plain QWidget toolbar that slots into the outer VBox layout."""
@@ -2665,6 +2681,23 @@ class TakoReader(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
     # File loading
     # ─────────────────────────────────────────────────────────────────────────
+
+    def close_file(self):
+        """Close the current file and return to blank state."""
+        self._pages        = []
+        self._current      = 0
+        self._current_file = ""
+        self._bookmarks    = []
+        self.page_view.set_pixmap(QPixmap())
+        self.thumb_list.clear()
+        self.page_label.setText("— / —")
+        self.btn_prev.setEnabled(False)
+        self.btn_next.setEnabled(False)
+        self.btn_first.setEnabled(False)
+        self.btn_last.setEnabled(False)
+        self.ocr_panel.clear_all()
+        self.setWindowTitle("Tako Reader — タコReader")
+        self.statusBar().showMessage("File closed.")
 
     def open_file(self):
         last_dir = self._settings.value("last_dir", "")
@@ -2875,6 +2908,32 @@ class TakoReader(QMainWindow):
             lambda _: self.ocr_panel.set_ocr_state("error")
         )
         self._ocr_worker.start()
+
+    def _show_about(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About Tako Reader")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            "<h2>Tako Reader — タコReader</h2>"
+            "<p>A Japanese manga reader with built-in OCR, dictionary lookup, "
+            "and Anki integration for language immersion.</p>"
+            "<table cellspacing='4'>"
+            "<tr><td><b>Author</b></td><td>Tacoccino</td></tr>"
+            f"<tr><td><b>Qt</b></td><td>{QT_VERSION_STR}</td></tr>"
+            f"<tr><td><b>PyQt</b></td><td>{PYQT_VERSION_STR}</td></tr>"
+            "<tr><td><b>Source</b></td>"
+            "<td><a href='https://github.com/tacoccino/tako-reader'>"
+            "github.com/tacoccino/tako-reader</a></td></tr>"
+            "</table>"
+            "<p><small>Dictionary data: JMdict / KANJIDIC2 © Electronic Dictionary "
+            "Research and Development Group (CC BY-SA 3.0)<br>"
+            "OCR: manga-ocr by Maciej Budyś</small></p>"
+        )
+        msg.setStyleSheet("QMessageBox { background: #1a1a1a; color: #e0e0e0; }"
+                          "QLabel { color: #e0e0e0; }")
+        msg.exec()
 
     def open_settings(self):
         dlg = SettingsDialog(self._settings, parent=self)
