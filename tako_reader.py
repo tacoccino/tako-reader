@@ -2459,13 +2459,9 @@ class TakoReader(QMainWindow):
         open_dir.triggered.connect(self.open_folder)
         close_act = QAction("Close",        self, shortcut="Ctrl+W")
         close_act.triggered.connect(self.close_file)
-        quit_act  = QAction("Quit",         self, shortcut="Ctrl+Q")
-        quit_act.triggered.connect(self.close)
         file_menu.addActions([open_act, open_dir])
         file_menu.addSeparator()
         file_menu.addAction(close_act)
-        file_menu.addSeparator()
-        file_menu.addAction(quit_act)
 
         view_menu = mb.addMenu("View")
         fit_w     = QAction("Fit Width",  self, shortcut="W")
