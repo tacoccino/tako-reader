@@ -3112,7 +3112,13 @@ class TakoReader(QMainWindow):
         # Sync adjustment popup sliders to loaded values
         if hasattr(self, "_adj_popup"):
             self._adj_popup.load_values(**self._adjustments)
-        self.go_to_page(0)
+        # Jump to last-read page if session memory is enabled
+        last = self._load_last_page()
+        if self._settings.value("general/session_memory", True, type=bool) and last > 0:
+            self.go_to_page(0)   # render first so thumbnails are set
+            self.go_to_page(last)
+        else:
+            self.go_to_page(0)
         
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3666,6 +3672,20 @@ class TakoReader(QMainWindow):
     # Bookmarks
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _page_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"last_page/{h}"
+
+    def _load_last_page(self) -> int:
+        if not self._current_file:
+            return 0
+        return self._settings.value(self._page_key(), 0, type=int)
+
+    def _save_last_page(self, index: int):
+        if self._current_file:
+            self._settings.setValue(self._page_key(), index)
+
     def _bm_key(self) -> str:
         import hashlib
         h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
@@ -3790,9 +3810,10 @@ class TakoReader(QMainWindow):
         self._toast(f"⚠ OCR warmup failed: {err}", 6000)
 
     def _save_session_page(self, index: int):
-        """Persist the current page index (only when session memory is on)."""
+        """Persist page position — per-file hash key + session fallback."""
         if self._settings.value("general/session_memory", True, type=bool):
             self._settings.setValue("session/last_page", index)
+            self._save_last_page(index)
 
     def _restore_session(self):
         """Re-open the last file and jump to the last page, if session memory is on."""
