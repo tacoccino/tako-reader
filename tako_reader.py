@@ -2379,7 +2379,7 @@ class TakoReader(QMainWindow):
         content_lay.addWidget(self.ocr_panel)
 
         central_lay.addWidget(content, stretch=1)
-        self.statusBar().showMessage("Open a file to begin (File → Open)  🐙")
+        self.statusBar().hide()  # replaced by toast overlay
 
     def _build_nav_bar(self) -> QWidget:
         bar = QWidget()
@@ -2852,7 +2852,7 @@ class TakoReader(QMainWindow):
         self.btn_last.setEnabled(False)
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
-        self.statusBar().showMessage("File closed.")
+        
 
     def open_file(self):
         last_dir = self._settings.value("last_dir", "")
@@ -2904,7 +2904,7 @@ class TakoReader(QMainWindow):
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
         self._push_recent(path)
         self.go_to_page(0)
-        self.statusBar().showMessage(f"Loaded {len(pages)} pages — {Path(path).name}")
+        
 
     # ─────────────────────────────────────────────────────────────────────────
     # Navigation
@@ -2989,7 +2989,7 @@ class TakoReader(QMainWindow):
         self._page_mode = mode
         if self._pages:
             self.go_to_page(self._current)
-        self.statusBar().showMessage(f"Page mode: {mode.capitalize()}", 2000)
+        self._toast(f"Page mode: {mode.capitalize()}", 2000)
         # Sync toolbar button text
         if hasattr(self, "_page_mode_btn"):
             self._page_mode_btn.setText(
@@ -3067,14 +3067,12 @@ class TakoReader(QMainWindow):
             "thumb":     self.thumb_list.isVisible(),
             "ocr_panel": self.ocr_panel.isVisible(),
             "menubar":   self.menuBar().isVisible(),
-            "statusbar": self.statusBar().isVisible(),
         }
         self._toolbar.hide()
         self.nav_bar.hide()
         self.thumb_list.hide()
         self.ocr_panel.hide()
         self.menuBar().hide()
-        self.statusBar().hide()
         self.showFullScreen()
         QTimer.singleShot(50, self.page_view._apply_fit)
         self._show_fs_toast()
@@ -3088,16 +3086,25 @@ class TakoReader(QMainWindow):
         self.thumb_list.setVisible( pre.get("thumb",     True))
         self.ocr_panel.setVisible(  pre.get("ocr_panel", True))
         self.menuBar().setVisible(  pre.get("menubar",   True))
-        self.statusBar().setVisible(pre.get("statusbar", True))
         QTimer.singleShot(50, self.page_view._apply_fit)
 
-    def _show_fs_toast(self):
-        """Brief overlay hint telling the user how to exit fullscreen."""
-        toast = QLabel("Press F11 or Esc to exit fullscreen", self)
+    def _toast(self, message: str, duration_ms: int = 2500):
+        """Show a message overlaid on the page view. Replaces any existing toast."""
+        # Kill any existing toast immediately
+        if hasattr(self, "_current_toast") and self._current_toast:
+            try:
+                self._current_toast.deleteLater()
+            except Exception:
+                pass
+        if hasattr(self, "_current_toast_timer") and self._current_toast_timer:
+            self._current_toast_timer.stop()
+
+        # Parent to scroll area so position is relative to the page view
+        toast = QLabel(message, self.scroll)
         toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
         toast.setStyleSheet("""
             QLabel {
-                background: rgba(0, 0, 0, 160);
+                background: rgba(0, 0, 0, 180);
                 color: #fff;
                 border-radius: 8px;
                 padding: 8px 20px;
@@ -3105,11 +3112,35 @@ class TakoReader(QMainWindow):
             }
         """)
         toast.adjustSize()
-        # Centre near the top of the window
-        toast.move((self.width() - toast.width()) // 2, 24)
+        sw = self.scroll.width()
+        sh = self.scroll.height()
+        x = (sw - toast.width())  // 2
+        y =  sh - toast.height() - 32
+        toast.move(x, y)
         toast.show()
         toast.raise_()
-        QTimer.singleShot(3000, toast.deleteLater)
+        self._current_toast = toast
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._dismiss_toast)
+        timer.start(duration_ms)
+        self._current_toast_timer = timer
+
+    def _dismiss_toast(self):
+        """Dismiss the current toast immediately."""
+        if hasattr(self, "_current_toast") and self._current_toast:
+            try:
+                self._current_toast.deleteLater()
+            except Exception:
+                pass
+            self._current_toast = None
+        if hasattr(self, "_current_toast_timer") and self._current_toast_timer:
+            self._current_toast_timer.stop()
+            self._current_toast_timer = None
+
+    def _show_fs_toast(self):
+        self._toast("Press F11 or Esc to exit fullscreen", 3000)
 
     def _rotate(self, delta: int):
         """Rotate by delta degrees (90 or -90) and redraw."""
@@ -3140,9 +3171,7 @@ class TakoReader(QMainWindow):
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
-        self.statusBar().showMessage(
-            f"Reading mode: {'Right→Left (Manga)' if mode == 'rtl' else 'Left→Right'}"
-        )
+        self._toast(f"Reading mode: {'Right→Left (Manga)' if mode == 'rtl' else 'Left→Right'}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # OCR
@@ -3154,9 +3183,7 @@ class TakoReader(QMainWindow):
         self.act_ocr_mode.setChecked(checked)
         self.ocr_btn.setChecked(checked)
         self.page_view.set_ocr_mode(checked)
-        self.statusBar().showMessage(
-            "OCR mode: drag to select text region on page" if checked else "OCR mode off"
-        )
+        self._toast("OCR mode: drag to select text region on page" if checked else "OCR mode off")
 
     def _run_ocr(self, image: QImage, rect: QRect):
         if self._ocr_worker and self._ocr_worker.isRunning():
@@ -3213,7 +3240,7 @@ class TakoReader(QMainWindow):
                 if dev != new_device:
                     OCRProcessManager._instances[dev]._stop()
                     del OCRProcessManager._instances[dev]
-            self.statusBar().showMessage(f"Settings saved — OCR device: {new_device}")
+            self._toast(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
         lines = []
@@ -3407,7 +3434,7 @@ class TakoReader(QMainWindow):
         if not self._settings.value("ocr/warmup", False, type=bool):
             return
         device = self._settings.value("ocr/device", "cpu")
-        self.statusBar().showMessage("⏳ Pre-loading OCR model…")
+        self._toast("⏳ Pre-loading OCR model…", 60000)
         self.ocr_panel.set_ocr_state("loading")
         self._warmup_worker = OCRWarmupWorker(device)
         self._warmup_worker.ready.connect(self._on_ocr_ready)
@@ -3416,11 +3443,13 @@ class TakoReader(QMainWindow):
 
     def _on_ocr_ready(self, dev: str):
         self.ocr_panel.set_ocr_state("ready")
-        self.statusBar().showMessage(f"✓ OCR model ready on {dev}  🐙", 4000)
+        self._dismiss_toast()
+        self._toast(f"✓ OCR model ready on {dev}  🐙", 4000)
 
     def _on_ocr_failed(self, err: str):
         self.ocr_panel.set_ocr_state("error")
-        self.statusBar().showMessage(f"⚠ OCR warmup failed: {err}", 6000)
+        self._dismiss_toast()
+        self._toast(f"⚠ OCR warmup failed: {err}", 6000)
 
     def _save_session_page(self, index: int):
         """Persist the current page index (only when session memory is on)."""
@@ -3438,9 +3467,7 @@ class TakoReader(QMainWindow):
             # go_to_page(0) was called by _load_path; now jump to actual last page
             if last_page > 0:
                 self.go_to_page(last_page)
-            self.statusBar().showMessage(
-                f"Restored session: {Path(last_file).name}  —  page {last_page + 1}"
-            )
+
 
     def closeEvent(self, event):
         self._settings.setValue("geometry",          self.saveGeometry())
