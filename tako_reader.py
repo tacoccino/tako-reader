@@ -29,7 +29,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QAction, QFont, QColor,
-    QCursor, QIcon, QGuiApplication, QPainter, QBrush, QPen
+    QCursor, QIcon, QGuiApplication, QPainter, QBrush, QPen, QTransform
 )
 
 # platform checks available if needed:
@@ -2311,6 +2311,7 @@ class TakoReader(QMainWindow):
         self._reading_mode                 = "rtl"
         self._current_file                 = ""
         self._page_mode                    = "single"  # "single" | "double"
+        self._rotation                     = 0          # 0, 90, 180, 270
 
         self._build_ui()
         self._build_menu()
@@ -2522,6 +2523,14 @@ class TakoReader(QMainWindow):
         view_menu.addAction(rtl_act)
         view_menu.addSeparator()
         view_menu.addAction(fs_act)
+        view_menu.addSeparator()
+        rot_l = QAction("Rotate Left",  self, shortcut="[")
+        rot_l.triggered.connect(lambda: self._rotate(-90))
+        rot_r = QAction("Rotate Right", self, shortcut="]")
+        rot_r.triggered.connect(lambda: self._rotate(90))
+        rot_reset = QAction("Reset Rotation", self)
+        rot_reset.triggered.connect(self._reset_rotation)
+        view_menu.addActions([rot_l, rot_r, rot_reset])
 
         nav_menu = mb.addMenu("Navigate")
         nav_menu.setMinimumWidth(230)
@@ -2624,6 +2633,13 @@ class TakoReader(QMainWindow):
                            if self.isFullScreen() else self._enter_fullscreen(),
                            icon_name="fullscreen",
                            tooltip="Enter Fullscreen (F11)"))
+        lay.addWidget(_sep())
+        lay.addWidget(_btn("", lambda: self._rotate(-90),
+                           icon_name="rotate-left",
+                           tooltip="Rotate Left ([)"))
+        lay.addWidget(_btn("", lambda: self._rotate(90),
+                           icon_name="rotate-right",
+                           tooltip="Rotate Right (])"))
         lay.addWidget(_sep())
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
                             icon_name="ocr", tooltip=f"OCR Selection Mode ({_ctrl()}+Shift+O)")
@@ -2880,6 +2896,7 @@ class TakoReader(QMainWindow):
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
         self._current_file = str(Path(path).resolve())
         self._bookmarks    = self._load_bookmarks()
+        self._rotation     = self._load_rotation()
         if self._settings.value("ocr/clear_on_file", True, type=bool):
             self.ocr_panel.clear_all()
 
@@ -2893,11 +2910,18 @@ class TakoReader(QMainWindow):
     # Navigation
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _rotate_pixmap(self, px: QPixmap) -> QPixmap:
+        """Rotate a pixmap by self._rotation degrees."""
+        if self._rotation == 0:
+            return px
+        transform = QTransform().rotate(self._rotation)
+        return px.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+
     def _get_display_pixmap(self, index: int) -> QPixmap:
-        """Return a single or side-by-side double-page pixmap."""
+        """Return a single or side-by-side double-page pixmap, rotated."""
         px1 = self._pages[index]
         if self._page_mode != "double" or index + 1 >= len(self._pages):
-            return px1
+            return self._rotate_pixmap(px1)
         px2 = self._pages[index + 1]
         # Stitch: in RTL mode page order is right-to-left
         left, right = (px2, px1) if self._reading_mode == "rtl" else (px1, px2)
@@ -2909,7 +2933,7 @@ class TakoReader(QMainWindow):
         painter.drawPixmap(0,            (h - left.height())  // 2, left)
         painter.drawPixmap(left.width(), (h - right.height()) // 2, right)
         painter.end()
-        return combined
+        return self._rotate_pixmap(combined)
 
     def go_to_page(self, index: int):
         if not self._pages:
@@ -3086,6 +3110,33 @@ class TakoReader(QMainWindow):
         toast.show()
         toast.raise_()
         QTimer.singleShot(3000, toast.deleteLater)
+
+    def _rotate(self, delta: int):
+        """Rotate by delta degrees (90 or -90) and redraw."""
+        self._rotation = (self._rotation + delta) % 360
+        self._save_rotation()
+        if self._pages:
+            self.page_view.set_pixmap(self._get_display_pixmap(self._current))
+
+    def _reset_rotation(self):
+        self._rotation = 0
+        self._save_rotation()
+        if self._pages:
+            self.page_view.set_pixmap(self._get_display_pixmap(self._current))
+
+    def _rot_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"rotation/{h}"
+
+    def _load_rotation(self) -> int:
+        if not self._current_file:
+            return 0
+        return self._settings.value(self._rot_key(), 0, type=int)
+
+    def _save_rotation(self):
+        if self._current_file:
+            self._settings.setValue(self._rot_key(), self._rotation)
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
