@@ -2511,6 +2511,7 @@ class TakoReader(QMainWindow):
         view_menu.addAction(fs_act)
 
         nav_menu = mb.addMenu("Navigate")
+        nav_menu.setMinimumWidth(230)
         prev_a   = QAction("Previous Page", self, shortcut="Left")
         prev_a.triggered.connect(self.prev_page)
         next_a   = QAction("Next Page",     self, shortcut="Right")
@@ -3347,6 +3348,9 @@ class TakoReader(QMainWindow):
         self._apply_bg_colour(bg)
 
         # Page mode
+        fit_mode = self._settings.value("ui/fit_mode", "fit_width")
+        self.page_view.set_fit_mode(fit_mode)
+
         page_mode = self._settings.value("ui/page_mode", "single")
         self._set_page_mode(page_mode)
 
@@ -3402,6 +3406,7 @@ class TakoReader(QMainWindow):
         self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())
         self._settings.setValue("ui/segment_on",     self.ocr_panel.seg_check.isChecked())
         self._settings.setValue("ui/page_mode",      self._page_mode)
+        self._settings.setValue("ui/fit_mode",       self.page_view._fit_mode)
         OCRProcessManager.shutdown_all()
         super().closeEvent(event)
 
