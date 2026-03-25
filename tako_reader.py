@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
-    QLineEdit, QColorDialog
+    QLineEdit, QColorDialog, QSlider
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -2213,6 +2213,196 @@ class BookmarkPopup(QWidget):
         self.move(x, y)
 
 
+# ─── Image Adjustments Popup ─────────────────────────────────────────────────
+
+class ImageAdjustPopup(QWidget):
+    """
+    Floating popup with sliders for brightness, contrast, saturation, sharpness.
+    Dismisses on click outside.
+    """
+    changed = pyqtSignal()  # emitted whenever any slider moves
+
+    # (label, icon_name, attr, default, min, max, step)
+    _CONTROLS = [
+        ("Brightness", "adj-brightness", "brightness", 100, 0,   200, 1),
+        ("Contrast",   "adj-contrast",   "contrast",   100, 0,   200, 1),
+        ("Saturation", "adj-saturation", "saturation", 100, 0,   200, 1),
+        ("Sharpness",  "adj-sharpness",  "sharpness",  100, 0,   200, 1),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setMinimumWidth(300)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("""
+            QWidget {
+                background: #252535; color: #e0e0e0;
+                border: 1px solid #3a3a5a; border-radius: 8px;
+            }
+            QLabel { border: none; background: transparent; }
+            QSlider::groove:horizontal {
+                height: 4px; background: #3a3a5a; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 14px; height: 14px; margin: -5px 0;
+                background: #3584e4; border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal { background: #3584e4; border-radius: 2px; }
+            QPushButton {
+                background: #2a2a3a; color: #ccc;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 4px 14px; font-size: 9pt;
+            }
+            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+        """)
+
+        # Default values
+        self.brightness = 100
+        self.contrast   = 100
+        self.saturation = 100
+        self.sharpness  = 100
+
+        self._sliders: dict[str, QSlider] = {}
+        self._val_labels: dict[str, QLabel] = {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Header
+        header = QWidget()
+        header.setStyleSheet(
+            "background: #1e1e2e; border-bottom: 1px solid #3a3a5a;"
+            " border-top-left-radius: 8px; border-top-right-radius: 8px;"
+        )
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(14, 10, 10, 10)
+        title = QLabel("Image Adjustments")
+        title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        title.setStyleSheet("color: #fff; background: transparent; border: none;")
+        hl.addWidget(title, stretch=1)
+        outer.addWidget(header)
+
+        # Sliders
+        body = QWidget()
+        body.setStyleSheet("background: transparent; border: none;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 12, 14, 8)
+        bl.setSpacing(12)
+
+        from PyQt6.QtWidgets import QSlider
+        for label, icon_name, attr, default, mn, mx, step in self._CONTROLS:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+
+            # Icon
+            ic = load_icon(icon_name)
+            icon_lbl = QLabel()
+            icon_lbl.setFixedSize(16, 16)
+            if not ic.isNull():
+                icon_lbl.setPixmap(ic.pixmap(16, 16))
+            row.addWidget(icon_lbl)
+
+            # Label
+            name_lbl = QLabel(label)
+            name_lbl.setFixedWidth(72)
+            name_lbl.setStyleSheet("color: #bbb; font-size: 9pt; background: transparent; border: none;")
+            row.addWidget(name_lbl)
+
+            # Slider
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(mn, mx)
+            slider.setValue(default)
+            slider.setSingleStep(step)
+            slider.setPageStep(10)
+
+            val_lbl = QLabel(f"{default}%")
+            val_lbl.setFixedWidth(38)
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            val_lbl.setStyleSheet("color: #888; font-size: 8pt; background: transparent; border: none;")
+
+            def _on_change(v, a=attr, lbl=val_lbl):
+                setattr(self, a, v)
+                lbl.setText(f"{v}%")
+                self.changed.emit()
+
+            def _on_double_click(event, s=slider, d=default, a=attr, lbl=val_lbl):
+                s.setValue(d)
+
+            def _on_context_menu(pos, s=slider, d=default, a=attr, lbl=val_lbl):
+                from PyQt6.QtWidgets import QMenu
+                menu = QMenu(s)
+                menu.setStyleSheet("""
+                    QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
+                    QMenu::item:selected { background: #3584e4; }
+                """)
+                reset_act = menu.addAction("Reset")
+                if menu.exec(s.mapToGlobal(pos)) == reset_act:
+                    s.setValue(d)
+
+            slider.valueChanged.connect(_on_change)
+            slider.mouseDoubleClickEvent = _on_double_click
+            slider.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            slider.customContextMenuRequested.connect(_on_context_menu)
+            self._sliders[attr]    = slider
+            self._val_labels[attr] = val_lbl
+
+            row.addWidget(slider, stretch=1)
+            row.addWidget(val_lbl)
+            bl.addLayout(row)
+
+        # Reset button
+        reset_btn = QPushButton()
+        reset_btn.setToolTip("Reset all adjustments")
+        ic_reset = load_icon("adj-reset")
+        if not ic_reset.isNull():
+            reset_btn.setIcon(ic_reset)
+            reset_btn.setIconSize(QSize(14, 14))
+            reset_btn.setText("")
+            reset_btn.setFixedSize(28, 24)
+        else:
+            reset_btn.setText("Reset")
+        reset_btn.clicked.connect(self.reset)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(reset_btn)
+        bl.addLayout(btn_row)
+
+        outer.addWidget(body)
+
+    def reset(self):
+        for _, _, attr, default, *_ in self._CONTROLS:
+            self._sliders[attr].setValue(default)
+
+    def load_values(self, brightness: int, contrast: int,
+                    saturation: int, sharpness: int):
+        self._sliders["brightness"].setValue(brightness)
+        self._sliders["contrast"].setValue(contrast)
+        self._sliders["saturation"].setValue(saturation)
+        self._sliders["sharpness"].setValue(sharpness)
+
+    def get_values(self) -> dict:
+        return {
+            "brightness": self.brightness,
+            "contrast":   self.contrast,
+            "saturation": self.saturation,
+            "sharpness":  self.sharpness,
+        }
+
+    def show_at(self, global_pos):
+        self.adjustSize()
+        screen = QGuiApplication.screenAt(global_pos)
+        sg = screen.availableGeometry() if screen              else QGuiApplication.primaryScreen().availableGeometry()
+        x = global_pos.x() - self.width() // 2
+        y = global_pos.y() + 6
+        if x + self.width()  > sg.right():  x = sg.right()  - self.width()  - 4
+        if x < sg.left():                   x = sg.left()   + 4
+        if y + self.height() > sg.bottom(): y = global_pos.y() - self.height() - 6
+        self.move(x, y)
+        self.show()
+
+
 # ─── Thumbnail Strip ──────────────────────────────────────────────────────────
 
 class ThumbnailList(QListWidget):
@@ -2312,6 +2502,10 @@ class TakoReader(QMainWindow):
         self._current_file                 = ""
         self._page_mode                    = "single"  # "single" | "double"
         self._rotation                     = 0          # 0, 90, 180, 270
+        self._adjustments                  = {"brightness": 100, "contrast": 100,
+                                              "saturation": 100, "sharpness": 100}
+        self._adj_cache: dict               = {}   # (index, adj_key) → QPixmap
+        self._adj_debounce                  = None  # QTimer, set up after build
 
         self._build_ui()
         self._build_menu()
@@ -2326,6 +2520,12 @@ class TakoReader(QMainWindow):
         self._bookmarks: list[dict] = []
         self._bookmark_popup = BookmarkPopup(self)
         self._bookmark_popup.navigate.connect(self.go_to_page)
+        # Image adjustments popup
+        self._adj_popup = ImageAdjustPopup(self)
+        self._adj_popup.changed.connect(self._on_adjustment_changed)
+        self._adj_debounce = QTimer(self)
+        self._adj_debounce.setSingleShot(True)
+        self._adj_debounce.timeout.connect(self._apply_adjustment_debounced)
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI construction
@@ -2383,15 +2583,15 @@ class TakoReader(QMainWindow):
 
     def _build_nav_bar(self) -> QWidget:
         bar = QWidget()
-        bar.setFixedHeight(44)
+        bar.setFixedHeight(34)
         bar.setStyleSheet("background: #141414; border-top: 1px solid #2a2a2a;")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(12, 4, 12, 4)
+        lay.setContentsMargins(42, 4, 42, 4)
 
         nav_btn_style = """
             QPushButton {
-                background: #2a2a2a; color: #ddd;
-                border-radius: 6px; padding: 0 14px; font-size: 10pt;
+                background: #141414; color: #ddd;
+                border-radius: 6px; padding: 0 10px; font-size: 10pt;
             }
             QPushButton:hover    { background: #3584e4; }
             QPushButton:disabled { color: #555; }
@@ -2399,13 +2599,13 @@ class TakoReader(QMainWindow):
 
         def _nav_btn(label, slot, icon_name=None):
             b = QPushButton()
-            b.setFixedHeight(32)
+            b.setFixedHeight(20)
             b.setStyleSheet(nav_btn_style)
             b.clicked.connect(slot)
             ic = load_icon(icon_name) if icon_name else QIcon()
             if not ic.isNull():
                 b.setIcon(ic)
-                b.setIconSize(QSize(16, 16))
+                b.setIconSize(QSize(12, 12))
             else:
                 b.setText(label)
             return b
@@ -2640,6 +2840,10 @@ class TakoReader(QMainWindow):
         lay.addWidget(_btn("", lambda: self._rotate(90),
                            icon_name="rotate-right",
                            tooltip="Rotate Right (])"))
+        self._adj_btn = _btn("", self._show_adj_popup,
+                              icon_name="adjustments",
+                              tooltip="Image Adjustments")
+        lay.addWidget(self._adj_btn)
         lay.addWidget(_sep())
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
                             icon_name="ocr", tooltip=f"OCR Selection Mode ({_ctrl()}+Shift+O)")
@@ -2897,18 +3101,107 @@ class TakoReader(QMainWindow):
         self._current_file = str(Path(path).resolve())
         self._bookmarks    = self._load_bookmarks()
         self._rotation     = self._load_rotation()
+        self._adjustments  = self._load_adjustments()
+        self._adj_cache.clear()
         if self._settings.value("ocr/clear_on_file", True, type=bool):
             self.ocr_panel.clear_all()
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
         self._push_recent(path)
+        # Sync adjustment popup sliders to loaded values
+        if hasattr(self, "_adj_popup"):
+            self._adj_popup.load_values(**self._adjustments)
         self.go_to_page(0)
         
 
     # ─────────────────────────────────────────────────────────────────────────
     # Navigation
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _apply_adjustments(self, px: QPixmap) -> QPixmap:
+        """Apply brightness/contrast/saturation/sharpness via numpy — no encode/decode."""
+        adj = self._adjustments
+        if all(v == 100 for v in adj.values()):
+            return px
+        # Check cache
+        cache_key = (px.cacheKey(),
+                     adj["brightness"], adj["contrast"],
+                     adj["saturation"], adj["sharpness"])
+        cached = self._adj_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            import numpy as np
+            from PyQt6.QtGui import QImage
+
+            img = px.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+            ptr = img.bits()
+            ptr.setsize(img.width() * img.height() * 4)
+            arr = np.frombuffer(ptr, dtype=np.uint8).reshape(
+                (img.height(), img.width(), 4)
+            ).copy().astype(np.float32)
+
+            rgb = arr[:, :, :3]
+            alpha = arr[:, :, 3:4]
+
+            # Brightness: simple scale
+            b = adj["brightness"] / 100.0
+            rgb = rgb * b
+
+            # Contrast: scale around mid-grey (127.5)
+            c = adj["contrast"] / 100.0
+            rgb = (rgb - 127.5) * c + 127.5
+
+            # Saturation: lerp between greyscale and colour
+            s = adj["saturation"] / 100.0
+            grey = rgb[:, :, 0:1] * 0.299 + rgb[:, :, 1:2] * 0.587 + rgb[:, :, 2:3] * 0.114
+            rgb = grey + (rgb - grey) * s
+
+            # Sharpness: blend original with unsharp mask
+            sh = adj["sharpness"] / 100.0
+            if sh != 1.0:
+                from PIL import Image, ImageFilter
+                import io
+                # Only need sharpness via PIL — work on small array
+                rgb_clipped = np.clip(rgb, 0, 255).astype(np.uint8)
+                pil_img = Image.fromarray(rgb_clipped, "RGB")
+                if sh > 1.0:
+                    # Sharpen: blend with unsharp mask
+                    blurred = np.array(
+                        pil_img.filter(ImageFilter.GaussianBlur(radius=1)),
+                        dtype=np.float32
+                    )
+                    rgb = rgb_clipped.astype(np.float32) + (
+                        rgb_clipped.astype(np.float32) - blurred
+                    ) * (sh - 1.0)
+                else:
+                    # Soften: blend with blurred
+                    blurred = np.array(
+                        pil_img.filter(ImageFilter.GaussianBlur(radius=2)),
+                        dtype=np.float32
+                    )
+                    rgb = rgb_clipped.astype(np.float32) * sh + blurred * (1.0 - sh)
+
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+            result_arr = np.concatenate([rgb, alpha.astype(np.uint8)], axis=2)
+            result_arr = np.ascontiguousarray(result_arr)
+
+            h, w = result_arr.shape[:2]
+            result_img = QImage(
+                result_arr.tobytes(), w, h, w * 4,
+                QImage.Format.Format_RGBA8888
+            )
+            result_px = QPixmap.fromImage(result_img)
+            result_px.setDevicePixelRatio(px.devicePixelRatio())
+            # Cache result (keep max 20 entries to avoid unbounded memory use)
+            if len(self._adj_cache) > 20:
+                self._adj_cache.pop(next(iter(self._adj_cache)))
+            self._adj_cache[cache_key] = result_px
+            return result_px
+        except Exception as e:
+            print(f"[adjustments error] {e}")
+            return px
 
     def _rotate_pixmap(self, px: QPixmap) -> QPixmap:
         """Rotate a pixmap by self._rotation degrees."""
@@ -2918,11 +3211,12 @@ class TakoReader(QMainWindow):
         return px.transformed(transform, Qt.TransformationMode.SmoothTransformation)
 
     def _get_display_pixmap(self, index: int) -> QPixmap:
-        """Return a single or side-by-side double-page pixmap, rotated."""
-        px1 = self._pages[index]
+        """Return a single or side-by-side double-page pixmap, rotated and adjusted."""
+        # Apply adjustments at source resolution (before stitching/scaling)
+        px1 = self._apply_adjustments(self._pages[index])
         if self._page_mode != "double" or index + 1 >= len(self._pages):
             return self._rotate_pixmap(px1)
-        px2 = self._pages[index + 1]
+        px2 = self._apply_adjustments(self._pages[index + 1])
         # Stitch: in RTL mode page order is right-to-left
         left, right = (px2, px1) if self._reading_mode == "rtl" else (px1, px2)
         h = max(left.height(), right.height())
@@ -3149,11 +3443,55 @@ class TakoReader(QMainWindow):
         if self._pages:
             self.page_view.set_pixmap(self._get_display_pixmap(self._current))
 
+    def _on_adjustment_changed(self):
+        """Debounce rapid slider ticks — wait 60ms after last change then redraw."""
+        self._adjustments = self._adj_popup.get_values()
+        # Invalidate cache whenever values change
+        self._adj_cache.clear()
+        if self._adj_debounce:
+            self._adj_debounce.start(60)
+
+    def _apply_adjustment_debounced(self):
+        """Called 60ms after the last slider movement — persist and redraw."""
+        self._save_adjustments()
+        if self._pages:
+            self.page_view.set_pixmap(self._get_display_pixmap(self._current))
+
+    def _show_adj_popup(self):
+        self._adj_popup.load_values(**self._adjustments)
+        btn_pos = self._adj_btn.mapToGlobal(
+            QPoint(self._adj_btn.width() // 2, self._adj_btn.height())
+        )
+        self._adj_popup.show_at(btn_pos)
+
     def _reset_rotation(self):
         self._rotation = 0
         self._save_rotation()
         if self._pages:
             self.page_view.set_pixmap(self._get_display_pixmap(self._current))
+
+    def _adj_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"adjustments/{h}"
+
+    def _load_adjustments(self) -> dict:
+        if not self._current_file:
+            return {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+        import json as _json
+        raw = self._settings.value(self._adj_key(), "{}")
+        try:
+            saved = _json.loads(raw)
+            defaults = {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+            defaults.update(saved)
+            return defaults
+        except Exception:
+            return {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+
+    def _save_adjustments(self):
+        if self._current_file:
+            import json as _json
+            self._settings.setValue(self._adj_key(), _json.dumps(self._adjustments))
 
     def _rot_key(self) -> str:
         import hashlib
