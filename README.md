@@ -1,32 +1,65 @@
 # 🐙 Tako Reader — タコReader
 
-A manga/comic reader built with PyQt6, focused on Japanese immersion via
-drag-to-OCR text extraction powered by **manga-ocr**.
+A manga reader built for Japanese immersion. Drag-select any text region for instant OCR, look up words in an offline dictionary, and add vocabulary cards to Anki — all without leaving the reader.
+
+**Source:** [github.com/tacoccino/tako-reader](https://github.com/tacoccino/tako-reader)
 
 ---
 
 ## Features
 
-| Feature | Details |
-|---|---|
-| **File formats** | CBZ, ZIP, PDF, JPG, PNG, WebP, BMP, GIF, TIFF, AVIF, folders |
-| **OCR** | Drag-select any text region → instant Japanese text extraction |
-| **OCR device** | CPU or CUDA GPU selector in the OCR panel |
-| **Reading modes** | RTL (manga default) or LTR |
-| **Zoom** | Fit Width, Fit Page, or custom zoom in/out |
-| **Thumbnails** | Scrollable page strip for quick navigation |
-| **Dark theme** | Easy on the eyes for long reading sessions |
-| **Keyboard nav** | Arrow keys, Space, Home/End, F11 fullscreen |
+### Reader
+- **Formats:** CBZ, ZIP, PDF, images (JPG, PNG, WebP, BMP, GIF, TIFF, AVIF), folders
+- **Page modes:** Single page or double-page spread (RTL and LTR)
+- **Zoom:** Fit Width, Fit Page, or custom zoom — fit mode is remembered across sessions
+- **Fullscreen:** F11 / toolbar button — all UI hides, arrow keys still navigate
+- **Thumbnails:** Scrollable page strip for quick navigation
+- **Bookmarks:** Bookmark any page, name it, jump back to it via popup or menu
+- **Reading history:** File → Open Recent shows your last 10 opened files
+- **Session memory:** Reopens your last file at the last page (configurable)
+- **Background colour:** Presets (dark, sepia, white, etc.) or custom colour picker
+- **Jump to page:** Click the page indicator in the nav bar, type a number, press Enter
+
+### OCR
+- Drag a rectangle over any Japanese text to extract it
+- Each selection creates its own **card** in the OCR panel — no more one big text dump
+- Cards can be **merged** (for split speech bubbles) or dismissed individually
+- **Segmentation mode:** Tokenises text into clickable words using fugashi
+- Hover highlighting shows which word you're about to click
+- OCR model pre-loading at startup (optional, Settings → OCR)
+- CPU and CUDA device support
+
+### Dictionary
+- **Offline lookup** powered by JMdict / KANJIDIC2 via jamdict
+- Floating popup shows: word, reading, numbered definitions, kanji breakdown with on/kun readings
+- Accessible by clicking any segmented word, right-click context menu, or `Ctrl+D`
+
+### Anki Integration
+- Connects to a running Anki instance via AnkiConnect
+- Per-entry **+ Anki** button in the dictionary popup
+- `Ctrl+click` to edit card fields before adding
+- Fields: Word, Reading, Furigana (ruby HTML), Definition, Sentence
+- Flexible field mapping — maps Tako Reader data to any note type field
+- Deck and note type selection, all configured in Settings → Anki
+- Non-blocking — adding cards happens in the background
 
 ---
 
 ## Installation
 
-### 1. Python 3.11+
+### Requirements
+- Python 3.11 or newer
+- Anki (optional, for card creation)
+- AnkiConnect add-on (optional, for card creation)
 
-Make sure you have Python 3.11 or newer.
+### 1. Clone the repository
 
-### 2. Set up a virtual environment (recommended)
+```bash
+git clone https://github.com/tacoccino/tako-reader.git
+cd tako-reader
+```
+
+### 2. Create a virtual environment (recommended)
 
 ```bash
 python -m venv .venv
@@ -44,8 +77,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** `manga-ocr` is included and will download a ~400 MB transformer model on **first use**.
-> It's cached locally after that. If you don't need OCR, comment it out in `requirements.txt` before installing.
+> **Note:** `manga-ocr` downloads a ~400 MB transformer model on **first use**. It's cached locally after that. If you don't need OCR, comment it out in `requirements.txt` before installing.
+
+### 4. Install the dictionary database
+
+**macOS / Linux:**
+```bash
+pip install jamdict jamdict-data
+```
+
+**Windows** (standard `jamdict-data` fails due to a file lock bug — use the fix variant):
+```bash
+pip install jamdict jamdict-data-fix
+```
+
+Verify the database installed correctly:
+```bash
+python -m jamdict lookup 食べる
+```
+You should see entries with readings and definitions. If you see `[NG]` next to the database path when running `python -m jamdict info`, see the Troubleshooting section.
 
 ---
 
@@ -57,25 +107,13 @@ source .venv/bin/activate   # macOS/Linux
 .venv\Scripts\activate      # Windows
 
 python tako_reader.py
-# or pass a file directly:
+
+# Or pass a file directly:
 python tako_reader.py /path/to/volume.cbz
-```
 
-Pass `--debug` to print startup and diagnostic info to the terminal:
-
-```bash
+# Debug mode (prints startup and diagnostic info):
 python tako_reader.py --debug
 ```
-
----
-
-## How to use OCR
-
-1. Click **🔤 OCR Mode** in the toolbar (or `Ctrl+Shift+O`)
-2. Your cursor changes to a crosshair
-3. **Drag** a rectangle over Japanese text on the page
-4. The first OCR call is slow (~10–15s) while the model loads — subsequent calls are fast
-5. Extracted text appears in the right panel — copy and paste into Jisho, Anki, etc.
 
 ---
 
@@ -83,53 +121,69 @@ python tako_reader.py --debug
 
 | Key | Action |
 |---|---|
-| `→` / `Space` | Next page |
-| `←` | Previous page |
+| `→` / `Space` / `N` | Next page |
+| `←` / `B` / `P` | Previous page |
 | `Home` | First page |
 | `End` | Last page |
 | `W` | Fit Width |
 | `F` | Fit Page |
 | `Ctrl+=` | Zoom In |
 | `Ctrl+-` | Zoom Out |
-| `Ctrl+Shift+O` | Toggle OCR Mode |
-| `F11` | Fullscreen |
+| `F11` / `Esc` | Toggle fullscreen |
+| `Ctrl+G` | Jump to page |
 | `Ctrl+O` | Open file |
+| `Ctrl+W` | Close file |
+| `Ctrl+Shift+O` | Toggle OCR mode |
+| `Ctrl+D` | Dictionary lookup |
+| `Ctrl+Shift+T` | Toggle thumbnail panel |
+| `Ctrl+Shift+P` | Toggle OCR panel |
+| `Ctrl+B` | Toggle bookmark on current page |
+| `Ctrl+Shift+B` | Show bookmarks list |
+| `Ctrl+,` | Preferences |
 | `Ctrl+Q` | Quit |
+
+---
+
+## Setting Up Anki Integration
+
+1. Install the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on in Anki
+2. Open Anki (it must be running for the integration to work)
+3. In Tako Reader: **Tako Reader → Preferences → Anki**
+4. Click **Test Connection** — decks and note types will populate automatically
+5. Select your target **Deck** and **Note Type**
+6. Map each Anki field to the appropriate Tako Reader data source (Word, Reading, Furigana, Definition, Sentence)
+7. Click **Save**
+
+To add a card: look up a word via the dictionary popup, then click **+ Anki** next to the definition. `Ctrl+click` to review and edit the card fields before adding.
 
 ---
 
 ## Troubleshooting
 
-### "PyMuPDF not installed" error
+### Dictionary popup shows no results
+The jamdict database is not installed or not found.
+
 ```bash
-pip install pymupdf
+# Check status
+python -m jamdict info
+
+# Install (macOS/Linux)
+pip install jamdict jamdict-data
+
+# Install (Windows)
+pip install jamdict jamdict-data-fix
 ```
 
-### OCR returns garbage text
-- Make sure the selection covers **only** Japanese text
-- Vertical text works best when selected column by column
-- Very small font sizes may need zoom-in first
+If `jamdict info` shows `[NG]` for the database path, set the `JAMDICT_HOME` environment variable to the directory where the data was installed.
 
-### Slow first OCR
-Normal — the model loads into a subprocess on first use. Every call after that is fast within the same session.
+### OCR panel indicator stays grey / first OCR is very slow
+The OCR model (~400 MB) downloads on first use and loads into a subprocess. This is normal — subsequent calls in the same session are fast. Enable **Settings → OCR → Load at Startup** to pre-load the model when the app opens.
 
-### macOS: "App can't be opened"
-```bash
-# Run from Terminal directly:
-python3 tako_reader.py
-```
+### Windows: OCR / PyTorch DLL errors
 
----
+OCR on Windows can fail with a `DLL initialization routine failed` error related to `c10.dll` or similar PyTorch libraries.
 
-## Windows: OCR / PyTorch DLL errors
-
-OCR on Windows can fail with a `DLL initialization routine failed` error related to `c10.dll` or other PyTorch libraries. This happens because:
-
-- The default `torch` wheel on PyPI is built with CUDA, and even the `+cpu` variant attempts to load CUDA DLLs at import time on Windows
-- **RTX 50-series (Blackwell) GPUs** — CUDA driver initialisation fails for `c10.dll` on certain driver/PyTorch version combinations
-
-**Fix: install torch CPU-only, then reinstall manga-ocr without letting it overwrite torch**
-
+**Fix:**
 ```bash
 pip uninstall torch torchvision torchaudio manga-ocr -y
 pip cache purge
@@ -138,52 +192,71 @@ pip install manga-ocr --no-deps
 pip install transformers fugashi unidic-lite jaconv Pillow
 ```
 
-Verify the correct build is installed — the version string must end in `+cpu`:
-
+Verify the CPU-only build:
 ```bash
 python -c "import torch; print(torch.__version__)"
 # Expected: 2.x.x+cpu
 ```
 
-OCR will now work on CPU. The first call per session is slow (~10–15s) while the model loads; subsequent calls are fast.
+### Windows: Enabling CUDA (RTX 50-series / Blackwell)
 
-### Enabling CUDA on Windows (RTX 50-series / Blackwell)
-
-As of early 2026, stable PyTorch wheels with Blackwell (sm_120) CUDA kernel support for Windows are not yet available. You can try the nightly build:
+As of early 2026, stable PyTorch wheels with Blackwell (sm_120) CUDA support for Windows are not yet available. Try the nightly build:
 
 ```bash
 pip uninstall torch -y
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
 ```
 
-Once installed, reopen Tako Reader — the OCR device dropdown in the panel will show your GPU if CUDA initialises correctly. Use **OCR → Check OCR Installation** in the menu to diagnose.
+If CUDA initialises correctly, the GPU will appear in **Settings → OCR → Device**.
 
-### Checking what's installed
+### Diagnosing OCR issues
 
-Use the built-in diagnostic via **OCR → Check OCR Installation** in the menu bar. It shows manga-ocr status, PyTorch version, and any detected CUDA devices with their compute capability.
-
-You can also check from the terminal:
+Use **OCR → Check OCR Installation** in the menu bar. It reports manga-ocr status, PyTorch version, and any detected CUDA devices.
 
 ```bash
 python -c "import torch; print(torch.__version__, '| CUDA:', torch.cuda.is_available())"
 ```
 
+### macOS: "App can't be opened"
+Run directly from Terminal:
+```bash
+python3 tako_reader.py
+```
+
 ---
 
-## Recommended workflow for JP learning
+## Building
 
-1. Open manga in Tako Reader
-2. Enable OCR mode
-3. Select a speech bubble
-4. Copy text → paste into [Jisho.org](https://jisho.org) or [Takoboto](https://takoboto.jp)
-5. Add unknown words to Anki via [Yomichan/Yomitan](https://github.com/themoeway/yomitan) browser extension
+Requires PyInstaller (`pip install pyinstaller`).
+
+**Windows:**
+```bash
+build_windows.bat
+# Output: dist\tako_reader\
+```
+
+**macOS:**
+```bash
+chmod +x build_mac.sh && ./build_mac.sh
+# Output: dist/tako_reader.app
+```
+
+The OCR model is not bundled — it downloads to the HuggingFace cache on first use.
 
 ---
 
 ## Dependencies
 
-- [PyQt6](https://pypi.org/project/PyQt6/) — GUI framework
-- [PyMuPDF](https://pymupdf.readthedocs.io/) — PDF rendering
-- [manga-ocr](https://github.com/kha-white/manga-ocr) — Japanese OCR model
-- [Pillow](https://pillow.readthedocs.io/) — Image processing
-- [numpy](https://numpy.org/) — Array operations
+| Package | Purpose |
+|---|---|
+| [PyQt6](https://pypi.org/project/PyQt6/) | GUI framework |
+| [PyMuPDF](https://pymupdf.readthedocs.io/) | PDF rendering |
+| [manga-ocr](https://github.com/kha-white/manga-ocr) | Japanese OCR (by Maciej Budyś) |
+| [jamdict](https://github.com/neocl/jamdict) | Offline JMdict / KANJIDIC2 dictionary |
+| [jamdict-data / jamdict-data-fix](https://pypi.org/project/jamdict-data-fix/) | Dictionary database |
+| [Pillow](https://pillow.readthedocs.io/) | Image processing |
+| [numpy](https://numpy.org/) | Array operations for OCR |
+| [fugashi](https://github.com/polm/fugashi) | Japanese tokenisation (bundled with manga-ocr) |
+| [pykakasi](https://github.com/miurahr/pykakasi) | Furigana generation (bundled with manga-ocr) |
+
+Dictionary data licensed under [CC BY-SA 3.0](https://www.edrdg.org/edrdg/licence.html) by the Electronic Dictionary Research and Development Group.
