@@ -43,6 +43,11 @@ from PyQt6.QtGui import (
 
 # ─── Icon helper ─────────────────────────────────────────────────────────────
 
+def _ctrl() -> str:
+    """Return 'Cmd' on macOS, 'Ctrl' everywhere else — for use in tooltips."""
+    return "Cmd" if platform.system() == "Darwin" else "Ctrl"
+
+
 def load_icon(name: str) -> "QIcon":
     """
     Load an icon from the icons/ folder next to this script.
@@ -323,13 +328,17 @@ class PageView(QLabel):
     def _render(self):
         if not self._pixmap_orig:
             return
+        # Get device pixel ratio for HiDPI / Retina sharpness
+        dpr = self.devicePixelRatio()
         w = int(self._pixmap_orig.width()  * self._scale)
         h = int(self._pixmap_orig.height() * self._scale)
+        # Scale to physical pixels so the image is never upsampled by the OS
         scaled = self._pixmap_orig.scaled(
-            w, h,
+            int(w * dpr), int(h * dpr),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        scaled.setDevicePixelRatio(dpr)
         self.setPixmap(scaled)
         # Resize so the scroll area has real range at high zoom,
         # but never shrink below the viewport size (keeps image centred at low zoom)
@@ -337,9 +346,9 @@ class PageView(QLabel):
         if sa:
             vw = sa.viewport().width()
             vh = sa.viewport().height()
-            self.setFixedSize(max(scaled.width(), vw), max(scaled.height(), vh))
+            self.setFixedSize(max(w, vw), max(h, vh))
         else:
-            self.setFixedSize(scaled.width(), scaled.height())
+            self.setFixedSize(w, h)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -404,8 +413,12 @@ class PageView(QLabel):
                 if sel.width() > 5 and sel.height() > 5 and self._pixmap_orig:
                     pm = self.pixmap()
                     if pm:
-                        offset_x = (self.width()  - pm.width())  // 2
-                        offset_y = (self.height() - pm.height()) // 2
+                        dpr = pm.devicePixelRatio()
+                        # pm dimensions are physical pixels; widget/sel are logical
+                        pm_logical_w = pm.width()  / dpr
+                        pm_logical_h = pm.height() / dpr
+                        offset_x = (self.width()  - pm_logical_w) / 2
+                        offset_y = (self.height() - pm_logical_h) / 2
                         img_rect = QRect(
                             int((sel.x() - offset_x) / self._scale),
                             int((sel.y() - offset_y) / self._scale),
@@ -643,7 +656,7 @@ class DictPopup(QWidget):
 
             anki_btn = QPushButton("+ Anki")
             anki_btn.setStyleSheet(anki_btn_style)
-            anki_btn.setToolTip("+ Anki  |  Ctrl+click to edit before adding")
+            anki_btn.setToolTip(f"+ Anki  |  {_ctrl()}+click to edit before adding")
             _word    = entry["word"]
             _reading = reading_str
             _senses  = entry["senses"]
@@ -2585,14 +2598,14 @@ class TakoReader(QMainWindow):
 
         # ── Left side: thumbnails toggle ──
         self.tb_thumb_btn = _btn("", self._toggle_thumbnails, checkable=True,
-                                 tooltip="Toggle Thumbnails (Ctrl+Shift+T)")
+                                 tooltip=f"Toggle Thumbnails ({_ctrl()}+Shift+T)")
         self.tb_thumb_btn.setChecked(True)
         lay.addWidget(self.tb_thumb_btn)
         lay.addWidget(_sep())
 
         # ── Centre tools ──
         lay.addWidget(_btn("📂 Open", self.open_file,
-                           icon_name="open", tooltip="Open file (Ctrl+O)"))
+                           icon_name="open", tooltip=f"Open file ({_ctrl()}+O)"))
         lay.addWidget(_sep())
         lay.addWidget(_btn("↔ Fit Width",
                            lambda: self.page_view.set_fit_mode("fit_width"),
@@ -2603,17 +2616,17 @@ class TakoReader(QMainWindow):
         lay.addWidget(_sep())
         lay.addWidget(_btn("🔍+",
                            lambda: self.page_view.set_scale(self.page_view._scale * 1.2),
-                           icon_name="zoom-in", tooltip="Zoom In (Ctrl+=)"))
+                           icon_name="zoom-in", tooltip=f"Zoom In ({_ctrl()}+=)"))
         lay.addWidget(_btn("🔍−",
                            lambda: self.page_view.set_scale(self.page_view._scale / 1.2),
-                           icon_name="zoom-out", tooltip="Zoom Out (Ctrl+-)"))
+                           icon_name="zoom-out", tooltip=f"Zoom Out ({_ctrl()}+-)"))
         lay.addWidget(_btn("", lambda: self._exit_fullscreen()
                            if self.isFullScreen() else self._enter_fullscreen(),
                            icon_name="fullscreen",
                            tooltip="Enter Fullscreen (F11)"))
         lay.addWidget(_sep())
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
-                            icon_name="ocr", tooltip="OCR Selection Mode (Ctrl+Shift+O)")
+                            icon_name="ocr", tooltip=f"OCR Selection Mode ({_ctrl()}+Shift+O)")
         lay.addWidget(self.ocr_btn)
 
         # ── Right side: bookmarks + OCR panel toggle ──
@@ -2662,16 +2675,16 @@ class TakoReader(QMainWindow):
         lay.addWidget(_sep())
         self.tb_bookmark_btn = _btn("", self._toggle_bookmark, checkable=True,
                                     icon_name="bookmark-off",
-                                    tooltip="Bookmark this page (Ctrl+B)")
+                                    tooltip=f"Bookmark this page ({_ctrl()}+B)")
         lay.addWidget(self.tb_bookmark_btn)
         self.tb_bookmarks_btn = _btn("", self._show_bookmarks_popup,
                                      icon_name="bookmarks",
-                                     tooltip="Show all bookmarks (Ctrl+Shift+B)")
+                                     tooltip=f"Show all bookmarks ({_ctrl()}+Shift+B)")
         lay.addWidget(self.tb_bookmarks_btn)
         
         lay.addWidget(_sep())
         self.tb_ocr_btn = _btn("", self._toggle_ocr_panel, checkable=True,
-                               tooltip="Toggle OCR Panel (Ctrl+Shift+P)")
+                               tooltip=f"Toggle OCR Panel ({_ctrl()}+Shift+P)")
         self.tb_ocr_btn.setChecked(True)
         lay.addWidget(self.tb_ocr_btn)
 
@@ -2914,6 +2927,7 @@ class TakoReader(QMainWindow):
         left, right = (px2, px1) if self._reading_mode == "rtl" else (px1, px2)
         h = max(left.height(), right.height())
         combined = QPixmap(left.width() + right.width(), h)
+        combined.setDevicePixelRatio(px1.devicePixelRatio())
         combined.fill(Qt.GlobalColor.transparent)
         painter = QPainter(combined)
         painter.drawPixmap(0,            (h - left.height())  // 2, left)
