@@ -14,6 +14,8 @@
 # icons/zoom-in.png           Toolbar                   🔍+
 # icons/zoom-out.png          Toolbar                   🔍−
 # icons/ocr.png               Toolbar                   🔤 OCR Mode
+# icons/fullscreen.png        Toolbar                   [none]
+
 
 # ── Toolbar — Panel toggles (icon-only, no text fallback) ────────────────────
 # icons/panel-thumbnails.png       Toolbar left toggle       (hidden if missing)

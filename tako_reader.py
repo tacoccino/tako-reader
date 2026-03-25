@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
-    QLineEdit
+    QLineEdit, QColorDialog
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -2305,6 +2305,7 @@ class TakoReader(QMainWindow):
         self._apply_dark_theme()
         self._restore_settings()
         self.setAcceptDrops(True)
+        QApplication.instance().installEventFilter(self)
         # Pass settings to OCR panel so DictPopup has access to Anki config
         self.ocr_panel.set_settings(self._settings)
         # Bookmark state
@@ -2356,8 +2357,8 @@ class TakoReader(QMainWindow):
         self.scroll.setWidget(self.page_view)
         center_lay.addWidget(self.scroll, stretch=1)
 
-        nav = self._build_nav_bar()
-        center_lay.addWidget(nav)
+        self.nav_bar = self._build_nav_bar()
+        center_lay.addWidget(self.nav_bar)
         content_lay.addWidget(center, stretch=1)
 
         self.ocr_panel = OCRPanel()
@@ -2461,6 +2462,9 @@ class TakoReader(QMainWindow):
         close_act.triggered.connect(self.close_file)
         file_menu.addActions([open_act, open_dir])
         file_menu.addSeparator()
+        self._recent_menu = file_menu.addMenu("Open Recent")
+        self._rebuild_recent_menu()
+        file_menu.addSeparator()
         file_menu.addAction(close_act)
 
         view_menu = mb.addMenu("View")
@@ -2482,6 +2486,9 @@ class TakoReader(QMainWindow):
 
         rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
         rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
+        fs_act = QAction("Enter Fullscreen", self, shortcut="F11")
+        fs_act.triggered.connect(lambda: self._exit_fullscreen()
+                                 if self.isFullScreen() else self._enter_fullscreen())
 
         view_menu.addActions([fit_w, fit_p, zoom_in, zoom_out])
         view_menu.addSeparator()
@@ -2500,6 +2507,8 @@ class TakoReader(QMainWindow):
         view_menu.addActions([self.act_thumbnails, self.act_ocr_panel])
         view_menu.addSeparator()
         view_menu.addAction(rtl_act)
+        view_menu.addSeparator()
+        view_menu.addAction(fs_act)
 
         nav_menu = mb.addMenu("Navigate")
         prev_a   = QAction("Previous Page", self, shortcut="Left")
@@ -2597,6 +2606,10 @@ class TakoReader(QMainWindow):
         lay.addWidget(_btn("🔍−",
                            lambda: self.page_view.set_scale(self.page_view._scale / 1.2),
                            icon_name="zoom-out", tooltip="Zoom Out (Ctrl+-)"))
+        lay.addWidget(_btn("", lambda: self._exit_fullscreen()
+                           if self.isFullScreen() else self._enter_fullscreen(),
+                           icon_name="fullscreen",
+                           tooltip="Enter Fullscreen (F11)"))
         lay.addWidget(_sep())
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
                             icon_name="ocr", tooltip="OCR Selection Mode (Ctrl+Shift+O)")
@@ -2637,6 +2650,14 @@ class TakoReader(QMainWindow):
         self._page_mode_combo = page_mode_combo
         lay.addWidget(page_mode_combo)
         lay.addWidget(_sep())
+        
+        # Background colour swatch
+        self._bg_btn = QPushButton()
+        self._bg_btn.setFixedSize(22, 22)
+        self._bg_btn.setToolTip("Background colour")
+        self._bg_btn.clicked.connect(self._show_bg_picker)
+        lay.addWidget(self._bg_btn)
+
         lay.addWidget(_sep())
         self.tb_bookmark_btn = _btn("", self._toggle_bookmark, checkable=True,
                                     icon_name="bookmark-off",
@@ -2646,6 +2667,7 @@ class TakoReader(QMainWindow):
                                      icon_name="bookmarks",
                                      tooltip="Show all bookmarks (Ctrl+Shift+B)")
         lay.addWidget(self.tb_bookmarks_btn)
+        
         lay.addWidget(_sep())
         self.tb_ocr_btn = _btn("", self._toggle_ocr_panel, checkable=True,
                                tooltip="Toggle OCR Panel (Ctrl+Shift+P)")
@@ -2653,6 +2675,7 @@ class TakoReader(QMainWindow):
         lay.addWidget(self.tb_ocr_btn)
 
         # Insert at top of central layout (index 0), above content area
+        self._toolbar = bar
         self._outer_lay.insertWidget(0, bar)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2677,6 +2700,136 @@ class TakoReader(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
     # File loading
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Recent files
+    # ─────────────────────────────────────────────────────────────────────────
+
+    _MAX_RECENT = 10
+
+    def _push_recent(self, path: str):
+        import json as _json
+        raw = self._settings.value("recent_files", "[]")
+        try:
+            recent = _json.loads(raw)
+        except Exception:
+            recent = []
+        path = str(Path(path).resolve())
+        if path in recent:
+            recent.remove(path)
+        recent.insert(0, path)
+        recent = recent[:self._MAX_RECENT]
+        self._settings.setValue("recent_files", _json.dumps(recent))
+        self._rebuild_recent_menu()
+
+    def _get_recent(self) -> list:
+        import json as _json
+        raw = self._settings.value("recent_files", "[]")
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return []
+
+    def _rebuild_recent_menu(self):
+        self._recent_menu.clear()
+        recent = self._get_recent()
+        if not recent:
+            empty = QAction("No recent files", self)
+            empty.setEnabled(False)
+            self._recent_menu.addAction(empty)
+            return
+        for path in recent:
+            p = Path(path)
+            act = QAction(p.name, self)
+            act.setToolTip(path)
+            act.triggered.connect(lambda _, p=path: self._open_recent(p))
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear_act = QAction("Clear Recent Files", self)
+        clear_act.triggered.connect(self._clear_recent)
+        self._recent_menu.addAction(clear_act)
+
+    def _open_recent(self, path: str):
+        if not Path(path).exists():
+            QMessageBox.warning(self, "File Not Found",
+                                f"Could not find:\n{path}\n\nRemoving from recent list.")
+            import json as _json
+            recent = self._get_recent()
+            if path in recent:
+                recent.remove(path)
+            self._settings.setValue("recent_files", _json.dumps(recent))
+            self._rebuild_recent_menu()
+            return
+        self._load_path(path)
+
+    def _clear_recent(self):
+        self._settings.setValue("recent_files", "[]")
+        self._rebuild_recent_menu()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Background colour
+    # ─────────────────────────────────────────────────────────────────────────
+
+    _DEFAULT_BG = "#1a1a1a"
+
+    _BG_PRESETS = [
+        ("Dark (default)", "#1a1a1a"),
+        ("Black",          "#000000"),
+        ("Dark Grey",      "#2d2d2d"),
+        ("Warm Grey",      "#3a3530"),
+        ("White",          "#ffffff"),
+        ("Off-white",      "#f5f0e8"),
+        ("Sepia",          "#f4ecd8"),
+        ("Paper",          "#e8e0d0"),
+    ]
+
+    def _apply_bg_colour(self, colour: str):
+        """Apply background colour to the page scroll area and persist it."""
+        self._settings.setValue("ui/bg_colour", colour)
+        self.scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background: {colour}; }}"
+        )
+        self.page_view.setStyleSheet(f"background-color: {colour};")
+        # Update swatch button
+        self._bg_btn.setStyleSheet(
+            f"QPushButton {{ background: {colour}; border: 1px solid #555;"
+            f"border-radius: 4px; min-width: 18px; max-width: 18px;"
+            f"min-height: 18px; max-height: 18px; }}"
+            f"QPushButton:hover {{ border-color: #aaa; }}"
+        )
+
+    def _show_bg_picker(self):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
+            QMenu::item:selected { background: #3584e4; }
+        """)
+        for name, hex_col in self._BG_PRESETS:
+            act = QAction(name, self)
+            # Show a coloured block next to the name
+            px = QPixmap(12, 12)
+            from PyQt6.QtGui import QColor
+            px.fill(QColor(hex_col))
+            act.setIcon(QIcon(px))
+            act.triggered.connect(lambda _, c=hex_col: self._apply_bg_colour(c))
+            menu.addAction(act)
+        menu.addSeparator()
+        custom_act = QAction("Custom…", self)
+        custom_act.triggered.connect(self._pick_custom_bg)
+        menu.addAction(custom_act)
+        # Show below the button
+        btn_pos = self._bg_btn.mapToGlobal(
+            QPoint(0, self._bg_btn.height())
+        )
+        menu.exec(btn_pos)
+
+    def _pick_custom_bg(self):
+        from PyQt6.QtGui import QColor
+        current = self._settings.value("ui/bg_colour", self._DEFAULT_BG)
+        colour = QColorDialog.getColor(QColor(current), self, "Choose Background Colour")
+        if colour.isValid():
+            self._apply_bg_colour(colour.name())
 
     def close_file(self):
         """Close the current file and return to blank state."""
@@ -2742,6 +2895,7 @@ class TakoReader(QMainWindow):
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
+        self._push_recent(path)
         self.go_to_page(0)
         self.statusBar().showMessage(f"Loaded {len(pages)} pages — {Path(path).name}")
 
@@ -2855,15 +3009,91 @@ class TakoReader(QMainWindow):
         self.go_to_page(target)
 
     def eventFilter(self, obj, event):
-        """Pressing Escape while the page edit is open cancels the jump."""
         from PyQt6.QtCore import QEvent
-        if obj is self.page_edit and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Escape:
-                self._page_nav_stack.setCurrentIndex(0)
-                return True
-            if event.type() == QEvent.Type.FocusOut:
-                self._page_nav_stack.setCurrentIndex(0)
+        if event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            # Page-edit escape/focus-out handling
+            if obj is self.page_edit:
+                if key == Qt.Key.Key_Escape:
+                    self._page_nav_stack.setCurrentIndex(0)
+                    return True
+            # Navigation keys — only intercept when fullscreen, so arrow keys
+            # work normally in text fields (bookmarks, Anki edit, etc.) otherwise.
+            if self.isFullScreen() and self._page_nav_stack.currentIndex() == 0:
+                if key in (Qt.Key.Key_Right, Qt.Key.Key_Space, Qt.Key.Key_N):
+                    self.next_page()
+                    return True
+                elif key in (Qt.Key.Key_Left, Qt.Key.Key_B, Qt.Key.Key_P):
+                    self.prev_page()
+                    return True
+                elif key == Qt.Key.Key_Home:
+                    self.go_to_page(0)
+                    return True
+                elif key == Qt.Key.Key_End and self._pages:
+                    self.go_to_page(len(self._pages) - 1)
+                    return True
+                elif key == Qt.Key.Key_F11:
+                    self._exit_fullscreen() if self.isFullScreen() else self._enter_fullscreen()
+                    return True
+                elif key == Qt.Key.Key_Escape and self.isFullScreen():
+                    self._exit_fullscreen()
+                    return True
+        elif event.type() == QEvent.Type.FocusOut and obj is self.page_edit:
+            self._page_nav_stack.setCurrentIndex(0)
         return super().eventFilter(obj, event)
+
+    def _enter_fullscreen(self):
+        """Hide all chrome and go fullscreen."""
+        # Snapshot current visibility so we can restore it exactly
+        self._pre_fs = {
+            "toolbar":   self._toolbar.isVisible(),
+            "nav_bar":   self.nav_bar.isVisible(),
+            "thumb":     self.thumb_list.isVisible(),
+            "ocr_panel": self.ocr_panel.isVisible(),
+            "menubar":   self.menuBar().isVisible(),
+            "statusbar": self.statusBar().isVisible(),
+        }
+        self._toolbar.hide()
+        self.nav_bar.hide()
+        self.thumb_list.hide()
+        self.ocr_panel.hide()
+        self.menuBar().hide()
+        self.statusBar().hide()
+        self.showFullScreen()
+        QTimer.singleShot(50, self.page_view._apply_fit)
+        self._show_fs_toast()
+
+    def _exit_fullscreen(self):
+        """Restore all chrome and exit fullscreen."""
+        self.showNormal()
+        pre = getattr(self, "_pre_fs", {})
+        self._toolbar.setVisible(   pre.get("toolbar",   True))
+        self.nav_bar.setVisible(    pre.get("nav_bar",   True))
+        self.thumb_list.setVisible( pre.get("thumb",     True))
+        self.ocr_panel.setVisible(  pre.get("ocr_panel", True))
+        self.menuBar().setVisible(  pre.get("menubar",   True))
+        self.statusBar().setVisible(pre.get("statusbar", True))
+        QTimer.singleShot(50, self.page_view._apply_fit)
+
+    def _show_fs_toast(self):
+        """Brief overlay hint telling the user how to exit fullscreen."""
+        toast = QLabel("Press F11 or Esc to exit fullscreen", self)
+        toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toast.setStyleSheet("""
+            QLabel {
+                background: rgba(0, 0, 0, 160);
+                color: #fff;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-size: 10pt;
+            }
+        """)
+        toast.adjustSize()
+        # Centre near the top of the window
+        toast.move((self.width() - toast.width()) // 2, 24)
+        toast.show()
+        toast.raise_()
+        QTimer.singleShot(3000, toast.deleteLater)
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
@@ -2984,7 +3214,12 @@ class TakoReader(QMainWindow):
         elif key == Qt.Key.Key_End:
             self.go_to_page(len(self._pages) - 1)
         elif key == Qt.Key.Key_F11:
-            self.showNormal() if self.isFullScreen() else self.showFullScreen()
+            if self.isFullScreen():
+                self._exit_fullscreen()
+            else:
+                self._enter_fullscreen()
+        elif key == Qt.Key.Key_Escape and self.isFullScreen():
+            self._exit_fullscreen()
         else:
             super().keyPressEvent(event)
 
@@ -3106,6 +3341,10 @@ class TakoReader(QMainWindow):
         ocr_vis   = self._settings.value("ui/ocr_visible",   True,  type=bool)
         self._toggle_thumbnails(thumb_vis)
         self._toggle_ocr_panel(ocr_vis)
+
+        # Background colour
+        bg = self._settings.value("ui/bg_colour", self._DEFAULT_BG)
+        self._apply_bg_colour(bg)
 
         # Page mode
         page_mode = self._settings.value("ui/page_mode", "single")
