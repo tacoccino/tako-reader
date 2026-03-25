@@ -870,7 +870,7 @@ class DictPopup(QWidget):
 class HoverTextBrowser(QTextBrowser):
     """QTextBrowser that tracks which anchor the cursor is currently over."""
 
-    hovered_anchor_changed = pyqtSignal(str)  # emits href, or "" when none
+    hovered_anchor_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -896,25 +896,254 @@ class HoverTextBrowser(QTextBrowser):
 
 
 # Colours used in the text browser
-_TEXT_COLOUR   = "#cdd6f4"   # plain text
-_WORD_COLOUR   = "#93b4d4"   # segmented words (subtle blue tint)
-_WORD_HOVER    = "#1e1e2e"   # hover text (dark, against highlight bg)
-_WORD_HOVER_BG = "#93b4d4"   # hover background
+_TEXT_COLOUR   = "#cdd6f4"
+_WORD_COLOUR   = "#93b4d4"
+_WORD_HOVER    = "#1e1e2e"
+_WORD_HOVER_BG = "#93b4d4"
 _BG_COLOUR     = "#1e1e2e"
+
+_CARD_STYLE = """
+    QWidget#OCRCard {
+        background: #1e1e2e;
+        border: 1px solid #313244;
+        border-radius: 6px;
+    }
+"""
+
+_BTN_SUBTLE = """
+    QPushButton {
+        background: transparent; color: #555;
+        border: none; font-size: 9pt; padding: 2px 4px;
+    }
+    QPushButton:hover { color: #ccc; background: #2a2a3a; border-radius: 3px; }
+"""
+
+
+class OCRCard(QWidget):
+    """
+    A single OCR result card. Each rubber-band selection produces one card.
+    Newest cards are inserted at the top of the panel's scroll area.
+    """
+    word_clicked     = pyqtSignal(str, str)   # word, own raw_text (as sentence)
+    merge_requested  = pyqtSignal(object)     # emits self
+    dismiss_requested = pyqtSignal(object)    # emits self
+
+    def __init__(self, raw_text: str, segmentation_on: bool,
+                 dict_popup, parent=None):
+        super().__init__(parent)
+        self.setObjectName("OCRCard")
+        self.setStyleSheet(_CARD_STYLE)
+        self._raw_text       = raw_text
+        self._segmentation_on = segmentation_on
+        self._hovered_word   = ""
+        self._last_hovered   = ""
+        self._dict_popup     = dict_popup
+
+        # Use a plain layout — buttons float over the browser as an overlay
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ── Text browser fills the card ──
+        self.browser = HoverTextBrowser()
+        self.browser.setOpenLinks(False)
+        self.browser.setFont(QFont("Noto Serif JP, serif", 16))
+        self.browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background: {_BG_COLOUR};
+                color: {_TEXT_COLOUR};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 6px 24px 6px;
+                font-size: 18px;
+            }}
+        """)
+        self.browser.anchorClicked.connect(self._on_word_clicked)
+        self.browser.hovered_anchor_changed.connect(self._on_hover_changed)
+        self.browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.browser.customContextMenuRequested.connect(self._show_context_menu)
+        self.browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(self.browser)
+
+        # ── Button row overlaid at bottom-right of the browser ──
+        self._btn_bar = QWidget(self)
+        self._btn_bar.setStyleSheet("background: transparent;")
+        btn_lay = QHBoxLayout(self._btn_bar)
+        btn_lay.setContentsMargins(0, 0, 4, 2)
+        btn_lay.setSpacing(2)
+        btn_lay.addStretch()
+
+        self._merge_btn = QPushButton()
+        self._merge_btn.setToolTip("Merge with card above")
+        self._merge_btn.setStyleSheet(_BTN_SUBTLE)
+        self._merge_btn.setFixedSize(22, 18)
+        ic_merge = load_icon("merge")
+        if not ic_merge.isNull():
+            self._merge_btn.setIcon(ic_merge)
+            self._merge_btn.setIconSize(QSize(12, 12))
+        else:
+            self._merge_btn.setText("↕")
+        self._merge_btn.clicked.connect(lambda: self.merge_requested.emit(self))
+        btn_lay.addWidget(self._merge_btn)
+
+        copy_btn = QPushButton()
+        copy_btn.setToolTip("Copy text")
+        copy_btn.setStyleSheet(_BTN_SUBTLE)
+        copy_btn.setFixedSize(22, 18)
+        ic_copy = load_icon("copy")
+        if not ic_copy.isNull():
+            copy_btn.setIcon(ic_copy)
+            copy_btn.setIconSize(QSize(12, 12))
+        else:
+            copy_btn.setText("C")
+        copy_btn.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText(self._raw_text)
+        )
+        btn_lay.addWidget(copy_btn)
+
+        dismiss_btn = QPushButton("✕")
+        dismiss_btn.setToolTip("Dismiss")
+        dismiss_btn.setStyleSheet(_BTN_SUBTLE)
+        dismiss_btn.setFixedSize(22, 18)
+        dismiss_btn.clicked.connect(lambda: self.dismiss_requested.emit(self))
+        btn_lay.addWidget(dismiss_btn)
+
+        # documentSizeChanged fires after layout is complete — reliable for initial size
+        self.browser.document().documentLayout().documentSizeChanged.connect(
+            lambda _: self._fit_browser_height()
+        )
+        self._render()
+
+    # ── Rendering ─────────────────────────────────────────────────────────────
+
+    def set_segmentation(self, on: bool):
+        self._segmentation_on = on
+        self._hovered_word = ""
+        self._render()
+
+    def _render(self):
+        raw = self._raw_text
+        if self._segmentation_on:
+            words = _segment_japanese(raw)
+            parts = []
+            for word in words:
+                esc = (word.replace("&","&amp;").replace("<","&lt;")
+                           .replace(">","&gt;").replace('"',"&quot;"))
+                if esc == self._hovered_word:
+                    parts.append(
+                        f'<a href="{esc}" style="color:{_WORD_HOVER};'
+                        f'background-color:{_WORD_HOVER_BG};'
+                        f'border-radius:3px;padding:0 2px;'
+                        f'text-decoration:none;">{esc}</a>'
+                    )
+                else:
+                    parts.append(
+                        f'<a href="{esc}" style="color:{_WORD_COLOUR};'
+                        f'text-decoration:none;">{esc}</a>'
+                    )
+            body = "".join(parts)
+        else:
+            esc = (raw.replace("&","&amp;").replace("<","&lt;")
+                      .replace(">","&gt;"))
+            body = f'<span style="color:{_TEXT_COLOUR};">{esc}</span>'
+
+        font_style = "font-family:'Noto Serif JP',serif;font-size:18px;"
+        html = f'<div style="{font_style}">{body}</div>'
+        self.browser.setHtml(html)
+
+    def _fit_browser_height(self):
+        """Resize browser to content and position the button overlay at the bottom."""
+        doc_h = int(self.browser.document().size().height())
+        # Extra 24px bottom padding makes room for the button bar overlay
+        h = max(doc_h + 28, 48)
+        self.browser.setFixedHeight(h)
+        self.setFixedHeight(h)
+        # Position btn_bar at bottom-right of the card
+        bw = self._btn_bar.sizeHint().width()
+        self._btn_bar.setGeometry(0, h - 22, self.width(), 22)
+
+    # ── Interaction ───────────────────────────────────────────────────────────
+
+    def _on_hover_changed(self, anchor: str):
+        if not self._segmentation_on:
+            return
+        self._hovered_word = anchor
+        self._last_hovered = anchor
+        self._render()
+
+    def _on_word_clicked(self, url):
+        word = url.toString()
+        if word:
+            self.word_clicked.emit(word, self._raw_text)
+
+    def _show_context_menu(self, pos):
+        menu = self.browser.createStandardContextMenu()
+        menu.addSeparator()
+        if self._segmentation_on:
+            lookup_word = self._last_hovered
+        else:
+            lookup_word = self.browser.textCursor().selectedText().strip()
+        dict_act = QAction("📚  Look Up in Dictionary", self)
+        dict_act.triggered.connect(
+            lambda: self._do_lookup(lookup_word)
+        )
+        dict_act.setEnabled(bool(lookup_word))
+        menu.addAction(dict_act)
+        menu.addSeparator()
+        for label, url_tpl in [
+            ("🔍  Search Jisho",    "https://jisho.org/search/{}"),
+            ("🐙  Search Takoboto", "https://takoboto.jp/?q={}"),
+        ]:
+            text = lookup_word or self._raw_text
+            act  = QAction(label, self)
+            act.triggered.connect(
+                lambda _, u=url_tpl, t=text: webbrowser.open(u.format(url_quote(t)))
+            )
+            act.setEnabled(bool(text))
+            menu.addAction(act)
+        menu.exec(self.browser.viewport().mapToGlobal(pos))
+
+    def _do_lookup(self, word: str):
+        if word and self._dict_popup:
+            self._dict_popup.show_word(word, QCursor.pos(),
+                                       sentence=self._raw_text)
+
+    # ── Merge ─────────────────────────────────────────────────────────────────
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        h = self.height()
+        if h > 0:
+            self._btn_bar.setGeometry(0, h - 22, self.width(), 22)
+
+    def absorb(self, other: "OCRCard"):
+        """Append other's text to this card (merge down into self)."""
+        self._raw_text = self._raw_text + " " + other._raw_text
+        self._render()
+
+    def set_merge_visible(self, visible: bool):
+        self._merge_btn.setVisible(visible)
+
+    @property
+    def raw_text(self) -> str:
+        return self._raw_text
 
 
 class OCRPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(280)
-        self._raw_texts: list[str] = []   # accumulates raw OCR strings
         self._segmentation_on = False
+        self._dict_popup      = None
+        self._app_settings    = None
+        self._cards: list[OCRCard] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        # ── Header row: title + segmentation toggle ──
+        # ── Header ──
         header_row = QHBoxLayout()
         title = QLabel("📖 OCR / Text")
         title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
@@ -922,9 +1151,7 @@ class OCRPanel(QWidget):
 
         self.seg_check = QCheckBox("Segment")
         self.seg_check.setChecked(False)
-        self.seg_check.setToolTip(
-            "Tokenise text into words.\nClick a word to search it on Jisho."
-        )
+        self.seg_check.setToolTip("Tokenise text into words.\nClick a word to look it up.")
         self.seg_check.setStyleSheet("""
             QCheckBox { color: #888; font-size: 9pt; }
             QCheckBox::indicator {
@@ -937,35 +1164,27 @@ class OCRPanel(QWidget):
         header_row.addWidget(self.seg_check)
         layout.addLayout(header_row)
 
-        # ── Text display: HoverTextBrowser supports links + hover + normal selection ──
-        self._hovered_word = ""
-        self.text_box = HoverTextBrowser()
-        self.text_box.setOpenLinks(False)   # we handle clicks ourselves
-        self.text_box.setFont(QFont("Noto Serif JP, serif", 16))
-        self.text_box.setStyleSheet(f"""
-            QTextBrowser {{
-                background: {_BG_COLOUR};
-                color: {_TEXT_COLOUR};
-                border: 1px solid #313244;
-                border-radius: 6px;
-                padding: 8px;
-                font-size: 18px;
-            }}
-        """)
-        self.text_box.anchorClicked.connect(self._on_word_clicked)
-        self.text_box.hovered_anchor_changed.connect(self._on_hover_changed)
-        self.text_box.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.text_box.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self.text_box, stretch=1)
+        # ── Scroll area containing cards ──
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        # ── Buttons ──
+        self._card_container = QWidget()
+        self._card_container.setStyleSheet("background: transparent;")
+        self._card_lay = QVBoxLayout(self._card_container)
+        self._card_lay.setContentsMargins(0, 0, 0, 0)
+        self._card_lay.setSpacing(6)
+        self._card_lay.addStretch()   # pushes cards toward the top
+
+        self._scroll.setWidget(self._card_container)
+        layout.addWidget(self._scroll, stretch=1)
+
+        # ── Bottom bar ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        self.copy_btn  = QPushButton("Copy")
-        self.copy_btn.clicked.connect(self._copy)
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self._clear)
-        btn_row.addWidget(self.copy_btn)
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.clicked.connect(self.clear_all)
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
 
@@ -973,182 +1192,101 @@ class OCRPanel(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-        # Shared popup instance — reused across lookups
-        self._dict_popup = None  # created in set_settings()
-        self._last_hovered_word = ""  # tracks hover for context menu / shortcut
+    # ── Settings wiring ───────────────────────────────────────────────────────
+
+    def set_settings(self, app_settings: QSettings):
+        self._app_settings = app_settings
+        self._dict_popup   = DictPopup(app_settings)
+        # Back-fill popup ref into any cards already created (shouldn't happen
+        # in practice but guards against ordering edge cases)
+        for card in self._cards:
+            card._dict_popup = self._dict_popup
 
     # ── Segmentation ─────────────────────────────────────────────────────────
 
     def _on_seg_toggled(self):
         self._segmentation_on = self.seg_check.isChecked()
-        self._hovered_word = ""
-        self._rerender()
+        for card in self._cards:
+            card.set_segmentation(self._segmentation_on)
 
-    def _on_hover_changed(self, anchor: str):
-        """Re-render with the newly hovered word highlighted."""
-        if not self._segmentation_on:
-            return
-        self._hovered_word = anchor
-        self._last_hovered_word = anchor  # remember for context menu / shortcut
-        self._rerender()
+    # ── Card management ───────────────────────────────────────────────────────
 
-    def _render_html(self, texts: list[str]) -> str:
-        """Build the HTML displayed in text_box from accumulated raw strings."""
-        html_parts = []
-        for i, raw in enumerate(texts):
-            if i > 0:
-                html_parts.append('<br>')
-            if self._segmentation_on:
-                words = _segment_japanese(raw)
-                for word in words:
-                    escaped = (word.replace("&", "&amp;")
-                                   .replace("<", "&lt;")
-                                   .replace(">", "&gt;")
-                                   .replace('"', "&quot;"))
-                    if escaped == self._hovered_word:
-                        html_parts.append(
-                            f'<a href="{escaped}" style="' +
-                            f'color:{_WORD_HOVER};' +
-                            f'background-color:{_WORD_HOVER_BG};' +
-                            f'border-radius:3px;padding:0 2px;' +
-                            f'text-decoration:none;">{escaped}</a>'
-                        )
-                    else:
-                        html_parts.append(
-                            f'<a href="{escaped}" style="color:{_WORD_COLOUR};' +
-                            f'text-decoration:none;">{escaped}</a>'
-                        )
-            else:
-                escaped = (raw.replace("&", "&amp;")
-                              .replace("<", "&lt;")
-                              .replace(">", "&gt;"))
-                html_parts.append(f'<span style="color:{_TEXT_COLOUR};">{escaped}</span>')
+    def _add_card(self, raw_text: str):
+        card = OCRCard(raw_text, self._segmentation_on,
+                       self._dict_popup, parent=self._card_container)
+        card.word_clicked.connect(self._on_card_word_clicked)
+        card.merge_requested.connect(self._on_merge_requested)
+        card.dismiss_requested.connect(self._on_dismiss_requested)
+        # Insert at top (index 0), above the stretch
+        self._card_lay.insertWidget(0, card)
+        self._cards.insert(0, card)
+        self._update_merge_buttons()
+        # Scroll to top so newest card is visible
+        QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(0))
 
-        font_style = "font-family: 'Noto Serif JP', serif; font-size: 18px;"
-        body = "".join(html_parts)
-        return f'<div style="{font_style} color:{_TEXT_COLOUR};">{body}</div>'
+    def _update_merge_buttons(self):
+        """Only show merge button on cards that have a card above them."""
+        for i, card in enumerate(self._cards):
+            # _cards[0] is newest (top); merge means append to card above = _cards[i-1]
+            card.set_merge_visible(i > 0)
 
-    def _rerender(self):
-        """Re-render current text with current segmentation state."""
-        if not self._raw_texts:
-            return
-        html = self._render_html(self._raw_texts)
-        sb   = self.text_box.verticalScrollBar()
-        sb_h = self.text_box.horizontalScrollBar()
-        vpos = sb.value()
-        hpos = sb_h.value()
-        self.text_box.setHtml(html)
-        sb.setValue(vpos)
-        sb_h.setValue(hpos)
-
-    def _on_word_clicked(self, url):
-        """Clicking a segmented word opens the inline dictionary popup."""
-        word = url.toString()
-        if word:
-            self._show_dict_popup(word)
-
-    def set_settings(self, app_settings: QSettings):
-        """Called from TakoReader after settings are available."""
-        self._app_settings = app_settings
-        self._dict_popup = DictPopup(app_settings)
-
-    def _show_dict_popup(self, word: str):
-        """Look up word and show the floating dictionary popup."""
-        if not word or self._dict_popup is None:
-            return
-        sentence = " ".join(self._raw_texts)
-        cursor_pos = QCursor.pos()
-        self._dict_popup.show_word(word, cursor_pos, sentence=sentence)
+    def _on_card_word_clicked(self, word: str, sentence: str):
+        if self._dict_popup:
+            self._dict_popup.show_word(word, QCursor.pos(), sentence=sentence)
         self.status.setText(f"Looking up: {word}")
 
-    def lookup_shortcut(self):
-        """
-        Called by keyboard shortcut.
-        Segment mode on  → look up last hovered word.
-        Segment mode off → look up selected text (no-op if nothing selected).
-        """
-        if self._segmentation_on:
-            word = self._last_hovered_word
-        else:
-            word = self.text_box.textCursor().selectedText().strip()
-        if word:
-            self._show_dict_popup(word)
+    def _on_merge_requested(self, card: OCRCard):
+        idx = self._cards.index(card)
+        if idx == 0:
+            return  # no card above
+        above = self._cards[idx - 1]
+        above.absorb(card)
+        self._remove_card(card)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    def _on_dismiss_requested(self, card: OCRCard):
+        self._remove_card(card)
+
+    def _remove_card(self, card: OCRCard):
+        if card in self._cards:
+            self._cards.remove(card)
+        self._card_lay.removeWidget(card)
+        card.deleteLater()
+        self._update_merge_buttons()
+
+    def clear_all(self):
+        for card in list(self._cards):
+            self._card_lay.removeWidget(card)
+            card.deleteLater()
+        self._cards.clear()
+        self.status.setText("")
+
+    # ── Public API (called by TakoReader) ─────────────────────────────────────
 
     def set_text(self, text: str):
-        self._raw_texts.append(text)
-        html = self._render_html(self._raw_texts)
-        self.text_box.setHtml(html)
-        self.text_box.verticalScrollBar().setValue(
-            self.text_box.verticalScrollBar().maximum()
-        )
+        self._add_card(text)
         self.status.setText("✓ OCR complete")
 
     def set_status(self, msg: str):
         self.status.setText(msg)
 
-    def _clear(self):
-        self._raw_texts.clear()
-        self.text_box.clear()
-        self.status.setText("")
-
-    def _selected_or_all(self) -> str:
-        text = self.text_box.textCursor().selectedText().strip()
-        return text or "".join(self._raw_texts)
-
-    # ── Actions ───────────────────────────────────────────────────────────────
-
-    def _copy(self):
-        QGuiApplication.clipboard().setText("\n".join(self._raw_texts))
-        self.status.setText("Copied!")
-
-    def _search_jisho(self):
-        text = self._selected_or_all()
-        if not text:
-            self.status.setText("Nothing to search.")
-            return
-        webbrowser.open("https://jisho.org/search/" + url_quote(text))
-        self.status.setText("Opened in browser ↗")
-
-    def _search_takoboto(self):
-        text = self._selected_or_all()
-        if not text:
-            self.status.setText("Nothing to search.")
-            return
-        webbrowser.open("https://takoboto.jp/?q=" + url_quote(text))
-        self.status.setText("Opened in browser ↗")
-
-    def _show_context_menu(self, pos):
-        menu = self.text_box.createStandardContextMenu()
-        menu.addSeparator()
-
-        # Dictionary lookup — word depends on mode (see lookup_shortcut logic)
-        lookup_word = ""
+    def lookup_shortcut(self):
+        """Ctrl+D: look up last hovered word across all cards."""
         if self._segmentation_on:
-            lookup_word = self._last_hovered_word
+            # Find the most recently hovered word across all cards
+            for card in self._cards:
+                if card._last_hovered:
+                    self._on_card_word_clicked(card._last_hovered, card.raw_text)
+                    return
         else:
-            lookup_word = self.text_box.textCursor().selectedText().strip()
-
-        dict_act = QAction("📚  Look Up in Dictionary", self)
-        dict_act.triggered.connect(lambda: self._show_dict_popup(lookup_word))
-        dict_act.setEnabled(bool(lookup_word))
-        menu.addAction(dict_act)
-        menu.addSeparator()
-
-        has_text = bool(self._raw_texts)
-        for label, slot in [
-            ("🔍  Search Jisho",    self._search_jisho),
-            ("🐙  Search Takoboto", self._search_takoboto),
-        ]:
-            act = QAction(label, self)
-            act.triggered.connect(slot)
-            act.setEnabled(has_text)
-            menu.addAction(act)
-        menu.exec(self.text_box.viewport().mapToGlobal(pos))
+            # Look for selected text in any card's browser
+            for card in self._cards:
+                sel = card.browser.textCursor().selectedText().strip()
+                if sel:
+                    self._on_card_word_clicked(sel, card.raw_text)
+                    return
 
 
-# ─── AnkiConnect helper ──────────────────────────────────────────────────────
+# ─── AnkiConnect helper ──────────────────────────────────────────────────────# ─── AnkiConnect helper ──────────────────────────────────────────────────────
 
 def _anki_request(action: str, url: str, api_key: str = "", **params) -> dict:
     """
@@ -1558,6 +1696,17 @@ class SettingsDialog(QDialog):
                        "and a CUDA-enabled PyTorch build. Changes take effect on the "
                        "next OCR call.")
 
+        self.ocr_clear_on_file_check = QCheckBox()
+        self.ocr_clear_on_file_check.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
+        """)
+        self._row(lay, "Clear on File Change", self.ocr_clear_on_file_check,
+                  hint="Clear the OCR panel when a new file is opened.")
+
         self.ocr_warmup_check = QCheckBox()
         self.ocr_warmup_check.setStyleSheet("""
             QCheckBox::indicator {
@@ -1810,6 +1959,8 @@ class SettingsDialog(QDialog):
                 break
         warmup_on = self.app_settings.value("ocr/warmup", False, type=bool)
         self.ocr_warmup_check.setChecked(warmup_on)
+        clear_on_file = self.app_settings.value("ocr/clear_on_file", True, type=bool)
+        self.ocr_clear_on_file_check.setChecked(clear_on_file)
 
         # Anki — restore URL/key and pre-populate from cache for instant display
         self.anki_url.setText(
@@ -1849,7 +2000,8 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/session_memory",
                                    self.session_memory_check.isChecked())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
-        self.app_settings.setValue("ocr/warmup",  self.ocr_warmup_check.isChecked())
+        self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
+        self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())
 
         # Anki
         self.app_settings.setValue("anki/url",   self.anki_url.text().strip())
@@ -2531,6 +2683,8 @@ class TakoReader(QMainWindow):
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
         self._current_file = str(Path(path).resolve())
         self._bookmarks    = self._load_bookmarks()
+        if self._settings.value("ocr/clear_on_file", True, type=bool):
+            self.ocr_panel.clear_all()
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
