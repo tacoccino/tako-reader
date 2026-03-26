@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
-    QLineEdit, QColorDialog, QSlider
+    QLineEdit, QColorDialog, QSlider, QSpinBox
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -1456,6 +1456,29 @@ def anki_store_media(url: str, api_key: str,
     return filename
 
 
+# ─── Page preload worker ──────────────────────────────────────────────────────
+
+class PagePreloadWorker(QThread):
+    """Loads a list of page pixmaps (already in memory) through _apply_adjustments
+    on a background thread so they are cache-warm by the time the user turns the page."""
+    done = pyqtSignal()
+
+    def __init__(self, indices: list, pages: list, get_display_fn):
+        super().__init__()
+        self._indices       = indices
+        self._pages         = pages
+        self._get_display   = get_display_fn
+
+    def run(self):
+        for i in self._indices:
+            if 0 <= i < len(self._pages):
+                try:
+                    self._get_display(i)
+                except Exception:
+                    pass
+        self.done.emit()
+
+
 # ─── AnkiConnect background workers ──────────────────────────────────────────
 
 class AnkiConnectWorker(QThread):
@@ -1891,6 +1914,53 @@ class SettingsDialog(QDialog):
                   hint="Remember the last opened file and page position. "
                        "Reopening Tako Reader will continue where you left off.")
 
+        # Preload row: checkbox + spinbox inline
+        preload_row_widget = QWidget()
+        preload_row_lay = QHBoxLayout(preload_row_widget)
+        preload_row_lay.setContentsMargins(0, 0, 0, 0)
+        preload_row_lay.setSpacing(8)
+
+        self.preload_check = QCheckBox()
+        self.preload_check.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid #444; border-radius: 3px;
+                background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked {
+                background: #3584e4; border-color: #3584e4;
+            }
+        """)
+        preload_row_lay.addWidget(self.preload_check)
+
+        self.preload_spin = QSpinBox()
+        self.preload_spin.setRange(1, 10)
+        self.preload_spin.setValue(2)
+        self.preload_spin.setSuffix(" pages")
+        self.preload_spin.setFixedWidth(90)
+        self.preload_spin.setStyleSheet("""
+            QSpinBox {
+                background: #2a2a2a; color: #ddd;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 2px 6px; font-size: 9pt;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 16px; background: #3a3a3a; border: none;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #3584e4;
+            }
+        """)
+        preload_row_lay.addWidget(self.preload_spin)
+        preload_row_lay.addStretch()
+
+        # Spinbox enabled only when checkbox is checked
+        self.preload_spin.setEnabled(self.preload_check.isChecked())
+        self.preload_check.toggled.connect(self.preload_spin.setEnabled)
+
+        self._row(lay, "Preload Pages", preload_row_widget,
+                  hint="Load upcoming pages in the background for instant page turns.")
+
     # ── OCR section ───────────────────────────────────────────────────────────
 
     def _build_ocr_section(self):
@@ -2184,6 +2254,10 @@ class SettingsDialog(QDialog):
         # General
         session_on = self.app_settings.value("general/session_memory", True, type=bool)
         self.session_memory_check.setChecked(session_on)
+        preload_on = self.app_settings.value("general/preload", True, type=bool)
+        self.preload_check.setChecked(preload_on)
+        self.preload_spin.setEnabled(preload_on)
+        self.preload_spin.setValue(self.app_settings.value("general/preload_count", 2, type=int))
 
         # OCR
         saved_device = self.app_settings.value("ocr/device", "cpu")
@@ -2233,6 +2307,8 @@ class SettingsDialog(QDialog):
         """Persist all values to QSettings and close."""
         self.app_settings.setValue("general/session_memory",
                                    self.session_memory_check.isChecked())
+        self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
+        self.app_settings.setValue("general/preload_count", self.preload_spin.value())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
         self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())
@@ -2422,6 +2498,7 @@ class ImageAdjustPopup(QWidget):
         ("Contrast",   "adj-contrast",   "contrast",   100, 0,   200, 1),
         ("Saturation", "adj-saturation", "saturation", 100, 0,   200, 1),
         ("Sharpness",  "adj-sharpness",  "sharpness",  100, 0,   200, 1),
+        ("Warmth",     "adj-warmth",     "warmth",       0, 0,   100, 1),
     ]
 
     def __init__(self, parent=None):
@@ -2455,6 +2532,7 @@ class ImageAdjustPopup(QWidget):
         self.contrast   = 100
         self.saturation = 100
         self.sharpness  = 100
+        self.warmth     = 0
 
         self._sliders: dict[str, QSlider] = {}
         self._val_labels: dict[str, QLabel] = {}
@@ -2570,11 +2648,12 @@ class ImageAdjustPopup(QWidget):
             self._sliders[attr].setValue(default)
 
     def load_values(self, brightness: int, contrast: int,
-                    saturation: int, sharpness: int):
+                    saturation: int, sharpness: int, warmth: int = 0):
         self._sliders["brightness"].setValue(brightness)
         self._sliders["contrast"].setValue(contrast)
         self._sliders["saturation"].setValue(saturation)
         self._sliders["sharpness"].setValue(sharpness)
+        self._sliders["warmth"].setValue(warmth)
 
     def get_values(self) -> dict:
         return {
@@ -2582,6 +2661,7 @@ class ImageAdjustPopup(QWidget):
             "contrast":   self.contrast,
             "saturation": self.saturation,
             "sharpness":  self.sharpness,
+            "warmth":     self.warmth,
         }
 
     def show_at(self, global_pos):
@@ -2949,7 +3029,8 @@ class TakoReader(QMainWindow):
         self._page_mode                    = "single"  # "single" | "double"
         self._rotation                     = 0          # 0, 90, 180, 270
         self._adjustments                  = {"brightness": 100, "contrast": 100,
-                                              "saturation": 100, "sharpness": 100}
+                                              "saturation": 100, "sharpness": 100,
+                                              "warmth": 0}
         self._adj_cache: dict               = {}   # (index, adj_key) → QPixmap
         self._adj_debounce                  = None  # QTimer, set up after build
 
@@ -3299,6 +3380,10 @@ class TakoReader(QMainWindow):
                               icon_name="adjustments",
                               tooltip="Image Adjustments")
         lay.addWidget(self._adj_btn)
+        self._warm_btn = _btn("", self._toggle_warmth, checkable=True,
+                               icon_name="warmth",
+                               tooltip="Night Shift / Warm Filter")
+        lay.addWidget(self._warm_btn)
         lay.addWidget(_sep())
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
                             icon_name="ocr", tooltip=f"OCR Selection Mode ({_ctrl()}+Shift+O)")
@@ -3583,12 +3668,14 @@ class TakoReader(QMainWindow):
     def _apply_adjustments(self, px: QPixmap) -> QPixmap:
         """Apply brightness/contrast/saturation/sharpness via numpy — no encode/decode."""
         adj = self._adjustments
-        if all(v == 100 for v in adj.values()):
+        defaults = {"brightness": 100, "contrast": 100, "saturation": 100,
+                    "sharpness": 100, "warmth": 0}
+        if all(adj.get(k, d) == d for k, d in defaults.items()):
             return px
         # Check cache
         cache_key = (px.cacheKey(),
                      adj["brightness"], adj["contrast"],
-                     adj["saturation"], adj["sharpness"])
+                     adj["saturation"], adj["sharpness"], adj.get("warmth", 0))
         cached = self._adj_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -3644,6 +3731,16 @@ class TakoReader(QMainWindow):
                     )
                     rgb = rgb_clipped.astype(np.float32) * sh + blurred * (1.0 - sh)
 
+            # Warmth: boost red, slightly boost green, reduce blue, dim slightly
+            w = adj.get("warmth", 0) / 100.0
+            if w > 0:
+                rgb = rgb.astype(np.float32)
+                # Dim: multiply by (1 - w*0.15) so at 100% brightness drops ~15%
+                rgb = rgb * (1.0 - w * 0.15)
+                rgb[:, :, 0] = np.clip(rgb[:, :, 0] + w * 40,  0, 255)  # R +40 at full
+                rgb[:, :, 1] = np.clip(rgb[:, :, 1] + w * 10,  0, 255)  # G +10 at full
+                rgb[:, :, 2] = np.clip(rgb[:, :, 2] - w * 30,  0, 255)  # B -30 at full
+
             rgb = np.clip(rgb, 0, 255).astype(np.uint8)
             result_arr = np.concatenate([rgb, alpha.astype(np.uint8)], axis=2)
             result_arr = np.ascontiguousarray(result_arr)
@@ -3690,6 +3787,26 @@ class TakoReader(QMainWindow):
         painter.end()
         return self._rotate_pixmap(combined)
 
+    def _preload_pages(self, current: int):
+        """Warm the adj cache for upcoming pages in the background."""
+        if not self._settings.value("general/preload", True, type=bool):
+            return
+        count = self._settings.value("general/preload_count", 2, type=int)
+        step  = -1 if self._reading_mode == "rtl" else 1
+        indices = []
+        for i in range(1, count + 1):
+            nxt = current + step * i
+            if 0 <= nxt < len(self._pages):
+                indices.append(nxt)
+        if not indices:
+            return
+        worker = PagePreloadWorker(indices, self._pages, self._get_display_pixmap)
+        if not hasattr(self, "_preload_workers"):
+            self._preload_workers = set()
+        self._preload_workers.add(worker)
+        worker.done.connect(lambda: self._preload_workers.discard(worker))
+        worker.start()
+
     def go_to_page(self, index: int):
         if not self._pages:
             return
@@ -3705,6 +3822,7 @@ class TakoReader(QMainWindow):
         self._save_session_page(index)
         if hasattr(self, "tb_bookmark_btn"):
             self._update_bookmark_btn()
+        self._preload_pages(index)
 
     def prev_page(self):
         step = 2 if self._page_mode == "double" else 1
@@ -3915,6 +4033,34 @@ class TakoReader(QMainWindow):
     def _apply_adjustment_debounced(self):
         """Called 60ms after the last slider movement — persist and redraw."""
         self._save_adjustments()
+        # Sync warm toolbar button to slider state
+        if hasattr(self, "_warm_btn"):
+            self._warm_btn.setChecked(self._adjustments.get("warmth", 0) > 0)
+        if self._pages:
+            self.page_view.set_pixmap(self._get_display_pixmap(self._current))
+
+    def _toggle_warmth(self):
+        """Toolbar toggle: turn warmth off (remember value) or restore last value."""
+        current = self._adjustments.get("warmth", 0)
+        if current > 0:
+            # Turning off — remember the intensity
+            self._last_warmth = current
+            self._adjustments["warmth"] = 0
+            self._warm_btn.setChecked(False)
+        else:
+            # Turning on — restore last intensity, or default 50
+            v = getattr(self, "_last_warmth", 50)
+            self._adjustments["warmth"] = v
+            self._warm_btn.setChecked(True)
+        # Sync slider and label in popup (blockSignals prevents _on_change firing)
+        v = self._adjustments["warmth"]
+        self._adj_popup._sliders["warmth"].blockSignals(True)
+        self._adj_popup._sliders["warmth"].setValue(v)
+        self._adj_popup._sliders["warmth"].blockSignals(False)
+        self._adj_popup._val_labels["warmth"].setText(f"{v}%")
+        self._adj_popup.warmth = v
+        self._adj_cache.clear()
+        self._save_adjustments()
         if self._pages:
             self.page_view.set_pixmap(self._get_display_pixmap(self._current))
 
@@ -3943,11 +4089,13 @@ class TakoReader(QMainWindow):
         raw = self._settings.value(self._adj_key(), "{}")
         try:
             saved = _json.loads(raw)
-            defaults = {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+            defaults = {"brightness": 100, "contrast": 100, "saturation": 100,
+                        "sharpness": 100, "warmth": 0}
             defaults.update(saved)
             return defaults
         except Exception:
-            return {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+            return {"brightness": 100, "contrast": 100, "saturation": 100,
+                    "sharpness": 100, "warmth": 0}
 
     def _save_adjustments(self):
         if self._current_file:
