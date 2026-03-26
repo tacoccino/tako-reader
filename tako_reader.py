@@ -1574,44 +1574,47 @@ class AnkiEditDialog(QDialog):
         if main_window is not None:
             img_lbl = QLabel("Image")
             root.addWidget(img_lbl)
-            img_row = QHBoxLayout()
-            self._img_status = QLabel("No image selected" if not image_b64
-                                      else "✓ Image captured")
+            # Status label
+            self._img_status = QLabel("No image selected")
             self._img_status.setStyleSheet("color: #666; font-size: 9pt;")
-            img_row.addWidget(self._img_status, stretch=1)
-            sel_btn = QPushButton("Select Region…")
-            sel_btn.setStyleSheet("""
+            root.addWidget(self._img_status)
+
+            # Preview label
+            self._img_preview = QLabel()
+            self._img_preview.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            self._img_preview.hide()
+            root.addWidget(self._img_preview)
+
+            # Button row: Select Region / Upload / Clear
+            _btn_style = """
                 QPushButton {
                     background: #2a2a3a; color: #ccc;
                     border: 1px solid #444; border-radius: 4px;
                     padding: 4px 10px; font-size: 9pt;
                 }
                 QPushButton:hover { background: #3584e4; color: #fff; }
-            """)
+            """
+            img_btns = QHBoxLayout()
+            sel_btn = QPushButton("Select Region…")
+            sel_btn.setStyleSheet(_btn_style)
             sel_btn.clicked.connect(self._select_image)
-            img_row.addWidget(sel_btn)
-            root.addLayout(img_row)
-            # Preview label (hidden until image captured)
-            self._img_preview = QLabel()
-            self._img_preview.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            self._img_preview.hide()
-            root.addWidget(self._img_preview)
-            # If image_b64 already provided (e.g. re-opened), show preview
+            img_btns.addWidget(sel_btn)
+
+            upload_btn = QPushButton("Upload…")
+            upload_btn.setStyleSheet(_btn_style)
+            upload_btn.clicked.connect(self._upload_image)
+            img_btns.addWidget(upload_btn)
+
+            clear_btn = QPushButton("Clear")
+            clear_btn.setStyleSheet(_btn_style)
+            clear_btn.clicked.connect(lambda: self._set_image(""))
+            img_btns.addWidget(clear_btn)
+            img_btns.addStretch()
+            root.addLayout(img_btns)
+
+            # Populate preview if image already set
             if image_b64:
-                try:
-                    from PyQt6.QtGui import QPixmap
-                    import base64
-                    px = QPixmap()
-                    px.loadFromData(base64.b64decode(image_b64))
-                    if not px.isNull():
-                        self._img_preview.setPixmap(
-                            px.scaled(120, 80,
-                                      Qt.AspectRatioMode.KeepAspectRatio,
-                                      Qt.TransformationMode.SmoothTransformation)
-                        )
-                        self._img_preview.show()
-                except Exception:
-                    pass
+                self._set_image(image_b64)
 
         # Buttons
         btn_box = QDialogButtonBox(
@@ -1622,9 +1625,32 @@ class AnkiEditDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         root.addWidget(btn_box)
 
+    def _set_image(self, b64: str):
+        """Update the stored image, status label, and preview."""
+        self._image_b64 = b64
+        if b64:
+            self._img_status.setText("✓ Image set")
+            self._img_status.setStyleSheet("color: #2ecc71; font-size: 9pt;")
+            try:
+                import base64 as _b64
+                px = QPixmap()
+                px.loadFromData(_b64.b64decode(b64))
+                if not px.isNull():
+                    self._img_preview.setPixmap(
+                        px.scaled(160, 100,
+                                  Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+                    )
+                    self._img_preview.show()
+                    return
+            except Exception:
+                pass
+        self._img_status.setText("No image selected")
+        self._img_status.setStyleSheet("color: #666; font-size: 9pt;")
+        self._img_preview.hide()
+
     def _select_image(self):
-        """Hide dialog, enter marquee, restore dialog with result."""
-        # Snapshot current field values before hiding
+        """Hide dialog, enter marquee, restore with captured image."""
         snapshot = {}
         for key, widget in self._editors.items():
             if isinstance(widget, QTextEdit):
@@ -1633,37 +1659,34 @@ class AnkiEditDialog(QDialog):
                 snapshot[key] = widget.text()
         self.hide()
         def _on_capture(b64):
-            # Restore field values (dialog was hidden, not closed)
             for key, val in snapshot.items():
                 w = self._editors[key]
                 if isinstance(w, QTextEdit):
                     w.setPlainText(val)
                 else:
                     w.setText(val)
-            self._image_b64 = b64
-            if b64:
-                self._img_status.setText("✓ Image captured")
-                # Show small preview
-                try:
-                    from PyQt6.QtGui import QPixmap
-                    import base64, io
-                    data = base64.b64decode(b64)
-                    px = QPixmap()
-                    px.loadFromData(data)
-                    if not px.isNull():
-                        self._img_preview.setPixmap(
-                            px.scaled(120, 80,
-                                      Qt.AspectRatioMode.KeepAspectRatio,
-                                      Qt.TransformationMode.SmoothTransformation)
-                        )
-                        self._img_preview.show()
-                except Exception:
-                    pass
-            else:
-                self._img_status.setText("No image selected")
-                self._img_preview.hide()
+            self._set_image(b64)
             self.show()
         self._main_window.enter_marquee_mode(_on_capture)
+
+    def _upload_image(self):
+        """Open a file picker and load the chosen image as base64."""
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+        )
+        if not path:
+            return
+        try:
+            import base64 as _b64
+            with open(path, "rb") as f:
+                data = f.read()
+            b64 = _b64.b64encode(data).decode()
+            self._set_image(b64)
+        except Exception as e:
+            print(f"[upload error] {e}")
 
     def get_values(self) -> dict[str, str]:
         result = {}
