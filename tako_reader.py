@@ -1048,10 +1048,16 @@ class OCRCard(QWidget):
         )
         btn_lay.addWidget(copy_btn)
 
-        dismiss_btn = QPushButton("✕")
+        dismiss_btn = QPushButton()
         dismiss_btn.setToolTip("Dismiss")
         dismiss_btn.setStyleSheet(_BTN_SUBTLE)
         dismiss_btn.setFixedSize(22, 18)
+        ic_dismiss = load_icon("remove")
+        if not ic_dismiss.isNull():
+            dismiss_btn.setIcon(ic_dismiss)
+            dismiss_btn.setIconSize(QSize(12, 12))
+        else:
+            dismiss_btn.setText("✕")
         dismiss_btn.clicked.connect(lambda: self.dismiss_requested.emit(self))
         btn_lay.addWidget(dismiss_btn)
 
@@ -1125,6 +1131,14 @@ class OCRCard(QWidget):
 
     def _show_context_menu(self, pos):
         menu = self.browser.createStandardContextMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background: #252535; color: #e0e0e0;
+                border: 1px solid #3a3a5a;
+            }
+            QMenu::item:selected { background: #3584e4; color: #fff; }
+            QMenu::separator { background: #3a3a5a; height: 1px; margin: 2px 8px; }
+        """)
         menu.addSeparator()
         if self._segmentation_on:
             lookup_word = self._last_hovered
@@ -1594,19 +1608,44 @@ class AnkiEditDialog(QDialog):
                 }
                 QPushButton:hover { background: #3584e4; color: #fff; }
             """
+            _flat_icon_btn = """
+                QPushButton {
+                    background: transparent; border: none;
+                    border-radius: 4px; padding: 4px;
+                }
+                QPushButton:hover { background: #2a2a3a; }
+            """
             img_btns = QHBoxLayout()
+            img_btns.setSpacing(4)
+
             sel_btn = QPushButton("Select Region…")
             sel_btn.setStyleSheet(_btn_style)
             sel_btn.clicked.connect(self._select_image)
             img_btns.addWidget(sel_btn)
 
-            upload_btn = QPushButton("Upload…")
-            upload_btn.setStyleSheet(_btn_style)
+            upload_btn = QPushButton()
+            upload_btn.setToolTip("Upload image…")
+            upload_btn.setFixedSize(26, 26)
+            upload_btn.setStyleSheet(_flat_icon_btn)
+            ic_upload = load_icon("upload")
+            if not ic_upload.isNull():
+                upload_btn.setIcon(ic_upload)
+                upload_btn.setIconSize(QSize(16, 16))
+            else:
+                upload_btn.setText("↑")
             upload_btn.clicked.connect(self._upload_image)
             img_btns.addWidget(upload_btn)
 
-            clear_btn = QPushButton("Clear")
-            clear_btn.setStyleSheet(_btn_style)
+            clear_btn = QPushButton()
+            clear_btn.setToolTip("Clear image")
+            clear_btn.setFixedSize(26, 26)
+            clear_btn.setStyleSheet(_flat_icon_btn)
+            ic_clear = load_icon("clear-img")
+            if not ic_clear.isNull():
+                clear_btn.setIcon(ic_clear)
+                clear_btn.setIconSize(QSize(16, 16))
+            else:
+                clear_btn.setText("✕")
             clear_btn.clicked.connect(lambda: self._set_image(""))
             img_btns.addWidget(clear_btn)
             img_btns.addStretch()
@@ -3989,10 +4028,11 @@ class TakoReader(QMainWindow):
             return
         self._marquee_callback  = callback
         self._pre_marquee_ocr   = self.page_view._ocr_mode
-        # Deactivate OCR mode while in marquee
         if self._pre_marquee_ocr:
             self._toggle_ocr_mode(False)
         self._marquee.activate(cover_widget=self.scroll.viewport())
+        self._toast("Draw a selection for the image field — press Esc to skip",
+                    60000)
 
     def _on_marquee_confirmed(self, rect: QRect):
         """User confirmed a selection — crop from source pixmap and encode."""
@@ -4045,6 +4085,7 @@ class TakoReader(QMainWindow):
         self._restore_after_marquee("")
 
     def _restore_after_marquee(self, b64: str):
+        self._dismiss_toast()
         # Restore OCR mode
         if self._pre_marquee_ocr:
             self._toggle_ocr_mode(True)
