@@ -554,9 +554,10 @@ class DictPopup(QWidget):
     Dismisses on click outside.
     """
 
-    def __init__(self, app_settings: QSettings, parent=None):
+    def __init__(self, app_settings: QSettings, main_window=None, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
-        self.app_settings = app_settings
+        self.app_settings  = app_settings
+        self.main_window   = main_window
         self._current_sentence = ""
         self._add_workers: set = set()   # keeps refs alive until threads finish
         self._connect_worker: "AnkiConnectWorker | None" = None
@@ -760,31 +761,49 @@ class DictPopup(QWidget):
     def _handle_anki_click(self, word: str, reading: str,
                            definition: str, btn: "QPushButton"):
         """
-        Normal click  → add directly.
-        Ctrl/Cmd click → open edit dialog first.
+        Normal click       → capture image if mapped, then add.
+        Ctrl/Cmd click     → open edit dialog first.
         """
         modifiers = QApplication.keyboardModifiers()
         ctrl = Qt.KeyboardModifier.ControlModifier
         if modifiers & ctrl:
+            # Always open edit dialog first — image capture happens inside dialog
             self._open_anki_edit_dialog(word, reading, definition)
+            return
+        # Check if Image field is mapped — if so, enter marquee mode first
+        mw = self.main_window
+        if mw and mw._image_field_is_mapped():
+            self.hide()  # hide popup while user selects
+            def _on_image(b64, w=word, r=reading, d=definition):
+                self.show()
+                self._add_to_anki(w, r, d, image_override=b64)
+            mw.enter_marquee_mode(_on_image)
         else:
             self._add_to_anki(word, reading, definition)
 
-    def _open_anki_edit_dialog(self, word: str, reading: str, definition: str):
-        """Open a dialog letting the user tweak card content before adding."""
+    def _open_anki_edit_dialog(self, word: str, reading: str,
+                               definition: str, image_b64: str = ""):
+        """Open a non-modal edit dialog so it can hide/show during marquee."""
         dlg = AnkiEditDialog(
             word, reading, definition,
             self._current_sentence,
             self.app_settings,
+            image_b64=image_b64,
+            main_window=self.main_window,
             parent=self
         )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        def _on_accepted():
             d = dlg.get_values()
             self._add_to_anki(d["word"], d["reading"], d["definition"],
-                              sentence_override=d["sentence"])
+                              sentence_override=d["sentence"],
+                              image_override=d.get("image", ""))
+        dlg.accepted.connect(_on_accepted)
+        dlg.setModal(False)
+        dlg.show()
 
     def _add_to_anki(self, word: str, reading: str, definition: str,
-                     sentence_override: str | None = None):
+                     sentence_override: str | None = None,
+                     image_override: str = ""):
         """Build field map from settings and call AnkiConnect addNote."""
         s = self.app_settings
         url   = s.value("anki/url",   "http://localhost:8765")
@@ -804,13 +823,27 @@ class DictPopup(QWidget):
             "Furigana":   furigana,
             "Definition": definition,
             "Sentence":   sentence_override if sentence_override is not None else self._current_sentence,
+            "Image":      image_override or "",
         }
         fields = {}
+        image_filename = ""
         # Iterate all keys under anki/field/
         s.beginGroup("anki/field")
         for field_name in s.childKeys():
             source = s.value(field_name, "— skip —")
-            if source != "— skip —" and source in source_map:
+            if source == "— skip —" or source not in source_map:
+                continue
+            if source == "Image":
+                b64 = source_map["Image"]
+                if b64:
+                    import time
+                    image_filename = f"tako_{int(time.time()*1000)}.png"
+                    try:
+                        anki_store_media(url, key, image_filename, b64)
+                        fields[field_name] = f'<img src="{image_filename}">'
+                    except Exception:
+                        pass  # skip image if store fails
+            else:
                 fields[field_name] = source_map[source]
         s.endGroup()
 
@@ -1218,9 +1251,10 @@ class OCRPanel(QWidget):
 
     # ── Settings wiring ───────────────────────────────────────────────────────
 
-    def set_settings(self, app_settings: QSettings):
+    def set_settings(self, app_settings: QSettings, main_window=None):
         self._app_settings = app_settings
-        self._dict_popup   = DictPopup(app_settings)
+        self._main_window  = main_window
+        self._dict_popup   = DictPopup(app_settings, main_window=main_window)
         # Back-fill popup ref into any cards already created (shouldn't happen
         # in practice but guards against ordering edge cases)
         for card in self._cards:
@@ -1397,6 +1431,17 @@ def anki_add_note(url: str, api_key: str, deck: str, model: str,
         raise RuntimeError(str(e))
 
 
+def anki_store_media(url: str, api_key: str,
+                     filename: str, data_b64: str) -> str:
+    """
+    Store a media file in Anki via AnkiConnect storeMediaFile.
+    Returns the filename Anki used (same as passed in).
+    """
+    _anki_request("storeMediaFile", url, api_key,
+                  filename=filename, data=data_b64)
+    return filename
+
+
 # ─── AnkiConnect background workers ──────────────────────────────────────────
 
 class AnkiConnectWorker(QThread):
@@ -1468,11 +1513,13 @@ class AnkiEditDialog(QDialog):
     """
 
     def __init__(self, word: str, reading: str, definition: str,
-                 sentence: str, app_settings: QSettings, parent=None):
+                 sentence: str, app_settings: QSettings,
+                 image_b64: str = "", main_window=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Card — Tako Reader")
         self.setMinimumWidth(420)
-        self.setModal(True)
+        self._image_b64  = image_b64
+        self._main_window = main_window
         self.setStyleSheet("""
             QDialog  { background: #1a1a1a; color: #e0e0e0; }
             QLabel   { color: #aaa; font-size: 9pt; }
@@ -1495,14 +1542,6 @@ class AnkiEditDialog(QDialog):
 
         furigana_html = _make_furigana_html(word, reading)
 
-        fields = [
-            ("Word",       word,          False),
-            ("Reading",    reading,       False),
-            ("Furigana",   furigana_html, False),
-            ("Definition", definition,    True),
-            ("Sentence",   sentence,      True),
-        ]
-
         self._editors: dict[str, QWidget] = {}
         field_style = """
             QLineEdit, QTextEdit {
@@ -1511,7 +1550,13 @@ class AnkiEditDialog(QDialog):
                 padding: 4px 6px; font-size: 10pt;
             }
         """
-        for label, value, multiline in fields:
+        for label, value, multiline in [
+            ("Word",       word,          False),
+            ("Reading",    reading,       False),
+            ("Furigana",   furigana_html, False),
+            ("Definition", definition,    True),
+            ("Sentence",   sentence,      True),
+        ]:
             lbl = QLabel(label)
             root.addWidget(lbl)
             if multiline:
@@ -1525,6 +1570,49 @@ class AnkiEditDialog(QDialog):
             root.addWidget(w)
             self._editors[label] = w
 
+        # Image field — only shown if main_window is available
+        if main_window is not None:
+            img_lbl = QLabel("Image")
+            root.addWidget(img_lbl)
+            img_row = QHBoxLayout()
+            self._img_status = QLabel("No image selected" if not image_b64
+                                      else "✓ Image captured")
+            self._img_status.setStyleSheet("color: #666; font-size: 9pt;")
+            img_row.addWidget(self._img_status, stretch=1)
+            sel_btn = QPushButton("Select Region…")
+            sel_btn.setStyleSheet("""
+                QPushButton {
+                    background: #2a2a3a; color: #ccc;
+                    border: 1px solid #444; border-radius: 4px;
+                    padding: 4px 10px; font-size: 9pt;
+                }
+                QPushButton:hover { background: #3584e4; color: #fff; }
+            """)
+            sel_btn.clicked.connect(self._select_image)
+            img_row.addWidget(sel_btn)
+            root.addLayout(img_row)
+            # Preview label (hidden until image captured)
+            self._img_preview = QLabel()
+            self._img_preview.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            self._img_preview.hide()
+            root.addWidget(self._img_preview)
+            # If image_b64 already provided (e.g. re-opened), show preview
+            if image_b64:
+                try:
+                    from PyQt6.QtGui import QPixmap
+                    import base64
+                    px = QPixmap()
+                    px.loadFromData(base64.b64decode(image_b64))
+                    if not px.isNull():
+                        self._img_preview.setPixmap(
+                            px.scaled(120, 80,
+                                      Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                        )
+                        self._img_preview.show()
+                except Exception:
+                    pass
+
         # Buttons
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -1534,6 +1622,49 @@ class AnkiEditDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         root.addWidget(btn_box)
 
+    def _select_image(self):
+        """Hide dialog, enter marquee, restore dialog with result."""
+        # Snapshot current field values before hiding
+        snapshot = {}
+        for key, widget in self._editors.items():
+            if isinstance(widget, QTextEdit):
+                snapshot[key] = widget.toPlainText()
+            else:
+                snapshot[key] = widget.text()
+        self.hide()
+        def _on_capture(b64):
+            # Restore field values (dialog was hidden, not closed)
+            for key, val in snapshot.items():
+                w = self._editors[key]
+                if isinstance(w, QTextEdit):
+                    w.setPlainText(val)
+                else:
+                    w.setText(val)
+            self._image_b64 = b64
+            if b64:
+                self._img_status.setText("✓ Image captured")
+                # Show small preview
+                try:
+                    from PyQt6.QtGui import QPixmap
+                    import base64, io
+                    data = base64.b64decode(b64)
+                    px = QPixmap()
+                    px.loadFromData(data)
+                    if not px.isNull():
+                        self._img_preview.setPixmap(
+                            px.scaled(120, 80,
+                                      Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
+                        )
+                        self._img_preview.show()
+                except Exception:
+                    pass
+            else:
+                self._img_status.setText("No image selected")
+                self._img_preview.hide()
+            self.show()
+        self._main_window.enter_marquee_mode(_on_capture)
+
     def get_values(self) -> dict[str, str]:
         result = {}
         for key, widget in self._editors.items():
@@ -1541,6 +1672,7 @@ class AnkiEditDialog(QDialog):
                 result[key.lower()] = widget.toPlainText()
             else:
                 result[key.lower()] = widget.text()
+        result["image"] = self._image_b64
         return result
 
 
@@ -1938,7 +2070,7 @@ class SettingsDialog(QDialog):
             "Fields set to '\u2014 skip \u2014' will be left blank."
         )
 
-        SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence"]
+        SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence", "Image"]
         combo_style = """
             QComboBox {
                 background: #2a2a2a; color: #ddd;
@@ -2403,6 +2535,258 @@ class ImageAdjustPopup(QWidget):
         self.show()
 
 
+# ─── Marquee selection overlay ───────────────────────────────────────────────
+
+class MarqueeOverlay(QWidget):
+    """
+    Transparent overlay over the page view for drawing a selection rectangle.
+    Supports draw, move, and edge-resize. Shows confirm/cancel buttons below rect.
+    Emits confirmed(QRect) with coordinates in overlay space, or cancelled().
+    """
+    confirmed  = pyqtSignal(QRect)
+    cancelled  = pyqtSignal()
+
+    _HANDLE   = 8    # handle size px
+    _MIN_SIZE = 10
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+        self._rect      : QRect | None = None
+        self._drawing   = False
+        self._drag_start: QPoint | None = None
+        self._drag_rect : QRect  | None = None
+        self._resize_edge = None   # "tl","tr","bl","br","t","b","l","r" or None
+
+        # Confirm / cancel buttons — hidden until a rect is drawn
+        self._confirm_btn = QPushButton("✓", self)
+        self._cancel_btn  = QPushButton("✕", self)
+        for btn, bg, hover in [
+            (self._confirm_btn, "#2ecc71", "#27ae60"),
+            (self._cancel_btn,  "#e74c3c", "#c0392b"),
+        ]:
+            btn.setFixedSize(28, 24)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {bg}; color: #fff;
+                    border: none; border-radius: 4px; font-size: 11pt;
+                }}
+                QPushButton:hover {{ background: {hover}; }}
+            """)
+            btn.hide()
+        self._confirm_btn.clicked.connect(self._on_confirm)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+
+    # ── Public ────────────────────────────────────────────────────────────────
+
+    def activate(self, cover_widget: "QWidget | None" = None):
+        """Resize to cover parent viewport and raise to top."""
+        target = cover_widget or self.parent()
+        if target:
+            self.setParent(target)
+            self.resize(target.size())
+            self.move(0, 0)
+        self._rect = None
+        self._confirm_btn.hide()
+        self._cancel_btn.hide()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.show()
+        self.raise_()
+        self.setFocus()
+
+    def deactivate(self):
+        self.hide()
+        self._rect = None
+        self._confirm_btn.hide()
+        self._cancel_btn.hide()
+
+    # ── Paint ─────────────────────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QRegion
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_SourceOver
+        )
+
+        if self._rect and abs(self._rect.width()) > 2 and abs(self._rect.height()) > 2:
+            r = self._rect.normalized()
+            # Paint vignette as 4 rects around the selection (never over it)
+            full = self.rect()
+            for vr in [
+                QRect(full.left(),  full.top(),    full.width(),     r.top() - full.top()),
+                QRect(full.left(),  r.bottom(),    full.width(),     full.bottom() - r.bottom()),
+                QRect(full.left(),  r.top(),       r.left() - full.left(), r.height()),
+                QRect(r.right(),    r.top(),       full.right() - r.right(), r.height()),
+            ]:
+                if vr.isValid():
+                    painter.fillRect(vr, QColor(0, 0, 0, 100))
+            # Blue semi-transparent fill inside selection
+            painter.fillRect(r, QColor(53, 132, 228, 60))
+            # Border
+            painter.setPen(QPen(QColor(53, 132, 228), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(r)
+            # Resize handles
+            painter.setBrush(QBrush(QColor(53, 132, 228)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            for hx, hy in self._handle_centers(r):
+                h = self._HANDLE
+                painter.drawRect(hx - h//2, hy - h//2, h, h)
+        else:
+            # No selection yet — light vignette over whole area
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
+
+    def _handle_centers(self, r: QRect):
+        cx, cy = r.center().x(), r.center().y()
+        return [
+            (r.left(),  r.top()),    (cx, r.top()),    (r.right(), r.top()),
+            (r.left(),  cy),                            (r.right(), cy),
+            (r.left(),  r.bottom()), (cx, r.bottom()), (r.right(), r.bottom()),
+        ]
+
+    # ── Mouse ─────────────────────────────────────────────────────────────────
+
+    def _hit_handle(self, pos: QPoint) -> str | None:
+        if not self._rect:
+            return None
+        r = self._rect.normalized()
+        H = self._HANDLE + 4
+        cx, cy = r.center().x(), r.center().y()
+        handles = {
+            "tl": (r.left(), r.top()),    "t": (cx, r.top()),    "tr": (r.right(), r.top()),
+            "l":  (r.left(), cy),                                  "r":  (r.right(), cy),
+            "bl": (r.left(), r.bottom()), "b": (cx, r.bottom()), "br": (r.right(), r.bottom()),
+        }
+        for name, (hx, hy) in handles.items():
+            if abs(pos.x() - hx) <= H and abs(pos.y() - hy) <= H:
+                return name
+        return None
+
+    def _cursor_for_edge(self, edge: str | None):
+        cursors = {
+            "tl": Qt.CursorShape.SizeFDiagCursor,
+            "br": Qt.CursorShape.SizeFDiagCursor,
+            "tr": Qt.CursorShape.SizeBDiagCursor,
+            "bl": Qt.CursorShape.SizeBDiagCursor,
+            "t":  Qt.CursorShape.SizeVerCursor,
+            "b":  Qt.CursorShape.SizeVerCursor,
+            "l":  Qt.CursorShape.SizeHorCursor,
+            "r":  Qt.CursorShape.SizeHorCursor,
+        }
+        return cursors.get(edge, Qt.CursorShape.CrossCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = event.pos()
+        edge = self._hit_handle(pos)
+        if edge:
+            self._resize_edge  = edge
+            self._drag_start   = pos
+            self._drag_rect    = QRect(self._rect.normalized())
+            return
+        if self._rect and self._rect.normalized().contains(pos):
+            self._drag_start = pos
+            self._drag_rect  = QRect(self._rect.normalized())
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            return
+        # Start new rect
+        self._drawing   = True
+        self._rect      = QRect(pos, pos)
+        self._drag_start = None
+        self._confirm_btn.hide()
+        self._cancel_btn.hide()
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        pos = event.pos()
+        if self._resize_edge and self._drag_start and self._drag_rect:
+            dx = pos.x() - self._drag_start.x()
+            dy = pos.y() - self._drag_start.y()
+            r  = QRect(self._drag_rect)
+            e  = self._resize_edge
+            if "l" in e: r.setLeft(r.left()   + dx)
+            if "r" in e: r.setRight(r.right()  + dx)
+            if "t" in e: r.setTop(r.top()     + dy)
+            if "b" in e: r.setBottom(r.bottom() + dy)
+            if r.width() >= self._MIN_SIZE and r.height() >= self._MIN_SIZE:
+                self._rect = r
+            self.update()
+            return
+        if self._drag_start and self._drag_rect and not self._drawing:
+            delta = pos - self._drag_start
+            self._rect = self._drag_rect.translated(delta)
+            self.update()
+            return
+        if self._drawing and self._rect:
+            self._rect.setBottomRight(pos)
+            self.update()
+            return
+        # Hover cursor
+        edge = self._hit_handle(pos)
+        if edge:
+            self.setCursor(self._cursor_for_edge(edge))
+        elif self._rect and self._rect.normalized().contains(pos):
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drawing    = False
+        self._drag_start = None
+        self._drag_rect  = None
+        self._resize_edge = None
+        if self._rect and abs(self._rect.width()) > self._MIN_SIZE                       and abs(self._rect.height()) > self._MIN_SIZE:
+            self._position_buttons()
+        self.update()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self._on_cancel()
+        elif event.key() == Qt.Key.Key_Return:
+            self._on_confirm()
+
+    # ── Button positioning ────────────────────────────────────────────────────
+
+    def _position_buttons(self):
+        if not self._rect:
+            return
+        r   = self._rect.normalized()
+        gap = 6
+        bw  = self._confirm_btn.width() + self._cancel_btn.width() + gap
+        bx  = r.center().x() - bw // 2
+        by  = min(r.bottom() + gap, self.height() - 30)
+        self._confirm_btn.move(bx, by)
+        self._cancel_btn.move(bx + self._confirm_btn.width() + gap, by)
+        self._confirm_btn.show()
+        self._cancel_btn.show()
+        self._confirm_btn.raise_()
+        self._cancel_btn.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._rect:
+            self._position_buttons()
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _on_confirm(self):
+        if self._rect:
+            self.confirmed.emit(self._rect.normalized())
+        self.deactivate()
+
+    def _on_cancel(self):
+        self.deactivate()
+        self.cancelled.emit()
+
+
 # ─── Thumbnail Strip ──────────────────────────────────────────────────────────
 
 class ThumbnailList(QListWidget):
@@ -2515,11 +2899,20 @@ class TakoReader(QMainWindow):
         self.setAcceptDrops(True)
         QApplication.instance().installEventFilter(self)
         # Pass settings to OCR panel so DictPopup has access to Anki config
-        self.ocr_panel.set_settings(self._settings)
+        self.ocr_panel.set_settings(self._settings, main_window=self)
+        # Marquee overlay — parented to scroll so it covers only the page area
+        self._marquee = MarqueeOverlay(self.scroll.viewport())
+        self._marquee.hide()
+        self._marquee.confirmed.connect(self._on_marquee_confirmed)
+        self._marquee.cancelled.connect(self._on_marquee_cancelled)
         # Bookmark state
         self._bookmarks: list[dict] = []
         self._bookmark_popup = BookmarkPopup(self)
         self._bookmark_popup.navigate.connect(self.go_to_page)
+        # Marquee state
+        self._captured_image_b64: str = ""
+        self._marquee_callback   = None
+        self._pre_marquee_ocr    = False
         # Image adjustments popup
         self._adj_popup = ImageAdjustPopup(self)
         self._adj_popup.changed.connect(self._on_adjustment_changed)
@@ -3548,6 +3941,94 @@ class TakoReader(QMainWindow):
             lambda _: self.ocr_panel.set_ocr_state("error")
         )
         self._ocr_worker.start()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Image capture via marquee
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _image_field_is_mapped(self) -> bool:
+        s = self._settings
+        s.beginGroup("anki/field")
+        keys = s.childKeys()
+        s.endGroup()
+        for field_name in keys:
+            if s.value(f"anki/field/{field_name}", "— skip —") == "Image":
+                return True
+        return False
+
+    def enter_marquee_mode(self, callback):
+        """
+        Activate the marquee overlay. callback(b64_str | "") is called
+        with the captured image (base64 PNG) or "" if cancelled.
+        """
+        if not self._marquee:
+            callback("")
+            return
+        self._marquee_callback  = callback
+        self._pre_marquee_ocr   = self.page_view._ocr_mode
+        # Deactivate OCR mode while in marquee
+        if self._pre_marquee_ocr:
+            self._toggle_ocr_mode(False)
+        self._marquee.activate(cover_widget=self.scroll.viewport())
+
+    def _on_marquee_confirmed(self, rect: QRect):
+        """User confirmed a selection — crop from source pixmap and encode."""
+        b64 = ""
+        try:
+            px = self.page_view._pixmap_orig
+            if px:
+                dpr      = self.page_view.devicePixelRatio()
+                scale    = self.page_view._scale
+                pm       = self.page_view.pixmap()
+                # Logical size of the displayed pixmap
+                pm_lw    = pm.width()  / dpr if pm else px.width()  * scale
+                pm_lh    = pm.height() / dpr if pm else px.height() * scale
+                # Centering offset within page_view
+                off_x    = (self.page_view.width()  - pm_lw) / 2
+                off_y    = (self.page_view.height() - pm_lh) / 2
+                h_scroll = self.scroll.horizontalScrollBar().value()
+                v_scroll = self.scroll.verticalScrollBar().value()
+
+                # rect comes from mouse events inside the overlay.
+                # The overlay is a top-level window whose (0,0) == viewport (0,0).
+                # To get source image coords:
+                #   1. Add scroll offset (page may be scrolled)
+                #   2. Subtract centering offset (pixmap may not fill page_view)
+                # Overlay is a child widget of the viewport — coords are viewport-local.
+                # _pixmap_orig has DPR=1 (loaded directly from file).
+                # scale = logical screen px / source px.
+                # source px = (viewport-local px + scroll - centering offset) / scale
+                src_rect = QRect(
+                    int((rect.x() + h_scroll - off_x) / scale),
+                    int((rect.y() + v_scroll - off_y) / scale),
+                    int(rect.width()  / scale),
+                    int(rect.height() / scale),
+                ).intersected(QRect(0, 0, px.width(), px.height()))
+
+                if src_rect.isValid():
+                    cropped = px.copy(src_rect)
+                    from PyQt6.QtCore import QBuffer, QIODevice
+                    import base64
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    cropped.save(buf, "PNG")
+                    buf.close()
+                    b64 = base64.b64encode(bytes(buf.data())).decode()
+        except Exception as e:
+            print(f"[marquee capture error] {e}")
+        self._restore_after_marquee(b64)
+
+    def _on_marquee_cancelled(self):
+        self._restore_after_marquee("")
+
+    def _restore_after_marquee(self, b64: str):
+        # Restore OCR mode
+        if self._pre_marquee_ocr:
+            self._toggle_ocr_mode(True)
+        cb = self._marquee_callback
+        self._marquee_callback = None
+        if cb:
+            cb(b64)
 
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox
