@@ -2155,6 +2155,17 @@ class SettingsDialog(QDialog):
         self._row(lay, "Preload Pages", preload_row_widget,
                   hint="Load upcoming pages in the background for instant page turns.")
 
+        self.keep_awake_check = QCheckBox()
+        self.keep_awake_check.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px; height: 16px;
+                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
+            }
+            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
+        """)
+        self._row(lay, "Keep Screen Awake", self.keep_awake_check,
+                  hint="Prevent the screen from sleeping while a file is open.")
+
     # ── OCR section ───────────────────────────────────────────────────────────
 
     def _build_ocr_section(self):
@@ -2452,6 +2463,8 @@ class SettingsDialog(QDialog):
         self.preload_check.setChecked(preload_on)
         self.preload_spin.setEnabled(preload_on)
         self.preload_spin.setValue(self.app_settings.value("general/preload_count", 2, type=int))
+        self.keep_awake_check.setChecked(
+            self.app_settings.value("general/keep_awake", True, type=bool))
 
         # OCR
         saved_device = self.app_settings.value("ocr/device", "cpu")
@@ -2503,6 +2516,7 @@ class SettingsDialog(QDialog):
                                    self.session_memory_check.isChecked())
         self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
         self.app_settings.setValue("general/preload_count", self.preload_spin.value())
+        self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
         self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())
@@ -3281,6 +3295,12 @@ class TakoReader(QMainWindow):
         self._apply_dark_theme()
         self._restore_settings()
         self.setAcceptDrops(True)
+        # Keep-awake and auto-hide cursor state — must be before installEventFilter
+        self._keep_awake_active = False
+        self._cursor_hidden     = False
+        self._cursor_hide_timer = QTimer(self)
+        self._cursor_hide_timer.setSingleShot(True)
+        self._cursor_hide_timer.timeout.connect(self._hide_cursor)
         QApplication.instance().installEventFilter(self)
         # Pass settings to OCR panel so DictPopup has access to Anki config
         self.ocr_panel.set_settings(self._settings, main_window=self)
@@ -3849,7 +3869,7 @@ class TakoReader(QMainWindow):
         self.btn_last.setEnabled(False)
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
-        
+        self._set_keep_awake(False)
 
     def open_file(self):
         last_dir = self._settings.value("last_dir", "")
@@ -3891,6 +3911,8 @@ class TakoReader(QMainWindow):
         self._settings.setValue("last_dir", str(Path(path).parent))
 
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
+        if self._settings.value("general/keep_awake", True, type=bool):
+            self._set_keep_awake(True)
         self._current_file = str(Path(path).resolve())
         self._bookmarks    = self._load_bookmarks()
         self._rotation     = self._load_rotation()
@@ -4152,6 +4174,8 @@ class TakoReader(QMainWindow):
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.MouseMove and self._pages:
+            self._reset_cursor_timer()
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
             # Page-edit escape/focus-out handling
@@ -4502,6 +4526,56 @@ class TakoReader(QMainWindow):
             saved   = self._settings.value(f"shortcuts/{action_id}", default)
             action.setShortcut(saved if saved else "")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Keep-awake / screen inhibit
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _set_keep_awake(self, enable: bool):
+        import platform
+        if platform.system() == "Darwin":
+            if enable and not self._keep_awake_active:
+                import subprocess
+                self._caffeinate = subprocess.Popen(
+                    ["caffeinate", "-d", "-i"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                self._keep_awake_active = True
+            elif not enable and self._keep_awake_active:
+                if hasattr(self, "_caffeinate"):
+                    self._caffeinate.terminate()
+                self._keep_awake_active = False
+        elif platform.system() == "Windows":
+            try:
+                import ctypes
+                ES_CONTINUOUS       = 0x80000000
+                ES_DISPLAY_REQUIRED = 0x00000002
+                ES_SYSTEM_REQUIRED  = 0x00000001
+                if enable:
+                    ctypes.windll.kernel32.SetThreadExecutionState(
+                        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+                    )
+                else:
+                    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+                self._keep_awake_active = enable
+            except Exception:
+                pass
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Auto-hide cursor
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _reset_cursor_timer(self):
+        if self._cursor_hidden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_hidden = False
+        self._cursor_hide_timer.start(2000)
+
+    def _hide_cursor(self):
+        if not self._pages:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+        self._cursor_hidden = True
+
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox
         from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
@@ -4784,6 +4858,7 @@ class TakoReader(QMainWindow):
 
 
     def closeEvent(self, event):
+        self._set_keep_awake(False)
         self._settings.setValue("geometry",          self.saveGeometry())
         self._settings.setValue("ui/thumb_visible",  self.thumb_list.isVisible())
         self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())
