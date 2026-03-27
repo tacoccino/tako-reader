@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
-    QLineEdit, QColorDialog, QSlider, QSpinBox, QTabWidget
+    QLineEdit, QColorDialog, QSlider, QSpinBox, QTabWidget, QKeySequenceEdit
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -1880,14 +1880,9 @@ class SettingsDialog(QDialog):
         self._content_lay.addStretch()
         tabs.addTab(anki_scroll, "Anki")
 
-        # ── Shortcuts tab (placeholder) ──
+        # ── Shortcuts tab ──
         sc_scroll, sc_lay = self._make_tab()
-        sc_placeholder = QLabel("Shortcut customization coming soon.")
-        sc_placeholder.setStyleSheet("color: #555; font-size: 9pt;")
-        sc_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sc_lay.addStretch()
-        sc_lay.addWidget(sc_placeholder)
-        sc_lay.addStretch()
+        self._build_shortcuts_section(sc_lay)
         tabs.addTab(sc_scroll, "Shortcuts")
 
         root.addWidget(tabs, stretch=1)
@@ -1914,6 +1909,149 @@ class SettingsDialog(QDialog):
             QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
         """)
         root.addWidget(btn_box)
+
+    def _build_shortcuts_section(self, lay: QVBoxLayout):
+        """Build the shortcuts editor table."""
+        hint = QLabel(
+            f"Click a shortcut and press your desired key combination.  "
+            f"Press Esc to clear.  Uses {'⌘' if __import__('platform').system() == 'Darwin' else 'Ctrl'} "
+            f"for modifier keys."
+        )
+        hint.setStyleSheet("color: #666; font-size: 8pt;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self._shortcut_editors: dict[str, QKeySequenceEdit] = {}
+
+        # Group by category
+        from collections import defaultdict
+        categories = defaultdict(list)
+        for action_id, (name, default, cat) in                 TakoReader.SHORTCUT_DEFAULTS.items():
+            categories[cat].append((action_id, name, default))
+
+        for cat_name in ["Navigation", "View", "File", "Bookmarks", "OCR"]:
+            if cat_name not in categories:
+                continue
+            # Category header
+            cat_lbl = QLabel(cat_name)
+            cat_lbl.setStyleSheet(
+                "color: #888; font-size: 8pt; font-weight: bold;"
+                " padding-top: 8px;"
+            )
+            lay.addWidget(cat_lbl)
+
+            for action_id, name, default in categories[cat_name]:
+                row = QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(12)
+
+                name_lbl = QLabel(name)
+                name_lbl.setFixedWidth(180)
+                name_lbl.setStyleSheet("color: #ccc; font-size: 9pt;")
+                row.addWidget(name_lbl)
+
+                editor = QKeySequenceEdit()
+                # Load saved or default
+                saved = self.app_settings.value(
+                    f"shortcuts/{action_id}", default
+                )
+                if saved:
+                    editor.setKeySequence(saved)
+
+                # Wrap in a styled container so we control border/background
+                container = QWidget()
+                container.setFixedWidth(150)
+                container.setFixedHeight(28)
+                container.setStyleSheet("""
+                    QWidget {
+                        background: #2a2a2a;
+                        border: 1px solid #555;
+                        border-radius: 4px;
+                    }
+                """)
+                c_lay = QHBoxLayout(container)
+                c_lay.setContentsMargins(6, 0, 0, 0)
+                c_lay.setSpacing(0)
+
+                # Strip all styling from the editor itself
+                editor.setStyleSheet("""
+                    QKeySequenceEdit {
+                        background: transparent;
+                        border: none;
+                        font-size: 9pt; color: #ddd;
+                    }
+                    QKeySequenceEdit QLineEdit {
+                        background: transparent;
+                        border: none;
+                        color: #ddd;
+                        font-size: 9pt;
+                    }
+                """)
+                c_lay.addWidget(editor)
+
+                # Highlight container border on focus
+                def _on_focus(focused, c=container):
+                    c.setStyleSheet(
+                        "QWidget { background: #252f3d; border: 2px solid #3584e4;"
+                        " border-radius: 4px; }"
+                        if focused else
+                        "QWidget { background: #2a2a2a; border: 1px solid #555;"
+                        " border-radius: 4px; }"
+                    )
+                editor.installEventFilter(self)
+                editor.setProperty("container", container)
+                editor.setProperty("focus_fn", _on_focus)
+
+                row.addWidget(container)
+
+                reset_btn = QPushButton("Reset")
+                reset_btn.setFixedWidth(54)
+                reset_btn.setStyleSheet("""
+                    QPushButton {
+                        background: transparent; color: #666;
+                        border: 1px solid #333; border-radius: 4px;
+                        padding: 2px 6px; font-size: 8pt;
+                    }
+                    QPushButton:hover { color: #ccc; border-color: #555; }
+                """)
+                reset_btn.clicked.connect(
+                    lambda _, e=editor, d=default: e.setKeySequence(d)
+                )
+                row.addWidget(reset_btn)
+                row.addStretch()
+
+                self._shortcut_editors[action_id] = editor
+                lay.addLayout(row)
+
+        # Reset all button
+        lay.addSpacing(12)
+        reset_all = QPushButton("Reset All to Defaults")
+        reset_all.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a; color: #aaa;
+                border: 1px solid #444; border-radius: 4px;
+                padding: 5px 14px; font-size: 9pt;
+            }
+            QPushButton:hover { background: #3a3a3a; color: #fff; }
+        """)
+        def _reset_all():
+            for aid, (_, default, _cat) in TakoReader.SHORTCUT_DEFAULTS.items():
+                if aid in self._shortcut_editors:
+                    self._shortcut_editors[aid].setKeySequence(default)
+        reset_all.clicked.connect(_reset_all)
+        lay.addWidget(reset_all)
+        lay.addStretch()
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if isinstance(obj, QKeySequenceEdit):
+            fn = obj.property("focus_fn")
+            if fn:
+                if event.type() == QEvent.Type.FocusIn:
+                    fn(True)
+                elif event.type() == QEvent.Type.FocusOut:
+                    fn(False)
+        return super().eventFilter(obj, event)
 
     def _section(self, title: str) -> QVBoxLayout:
         """Create a titled group box and return its inner layout."""
@@ -2374,6 +2512,17 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("anki/key",   self.anki_key.text().strip())
         self.app_settings.setValue("anki/deck",  self.anki_deck.currentText())
         self.app_settings.setValue("anki/model", self.anki_model.currentText())
+        # Shortcuts
+        if hasattr(self, "_shortcut_editors"):
+            for action_id, editor in self._shortcut_editors.items():
+                ks = editor.keySequence().toString()
+                default = TakoReader.SHORTCUT_DEFAULTS.get(action_id, ("","",""))[1]
+                if ks == default:
+                    # Remove override if same as default
+                    self.app_settings.remove(f"shortcuts/{action_id}")
+                else:
+                    self.app_settings.setValue(f"shortcuts/{action_id}", ks)
+
         for field, combo in self._field_widgets.items():
             self.app_settings.setValue(f"anki/field/{field}", combo.currentText())
 
@@ -2554,7 +2703,7 @@ class ImageAdjustPopup(QWidget):
         ("Contrast",   "adj-contrast",   "contrast",   100, 0,   200, 1),
         ("Saturation", "adj-saturation", "saturation", 100, 0,   200, 1),
         ("Sharpness",  "adj-sharpness",  "sharpness",  100, 0,   200, 1),
-        ("Warmth",     "adj-warmth",     "warmth",       0, 0,   100, 1),
+        ("Warmth",     "warmth",        "warmth",       0, 0,   100, 1),
     ]
 
     def __init__(self, parent=None):
@@ -3069,6 +3218,41 @@ def _load_dir(path: str) -> list[QPixmap]:
 # ─── Main Window ─────────────────────────────────────────────────────────────
 
 class TakoReader(QMainWindow):
+
+    # (display_name, default_shortcut, category)
+    # Empty string = no default shortcut
+    SHORTCUT_DEFAULTS: dict[str, tuple[str, str, str]] = {
+        # Navigation
+        "next_page":        ("Next Page",            "Right",        "Navigation"),
+        "prev_page":        ("Previous Page",         "Left",         "Navigation"),
+        "first_page":       ("First Page",            "Home",         "Navigation"),
+        "last_page":        ("Last Page",             "End",          "Navigation"),
+        "jump_to_page":     ("Jump to Page",          "Ctrl+G",       "Navigation"),
+        # View
+        "fit_width":        ("Fit Width",             "W",            "View"),
+        "fit_page":         ("Fit Page",              "F",            "View"),
+        "zoom_in":          ("Zoom In",               "Ctrl+=",       "View"),
+        "zoom_out":         ("Zoom Out",              "Ctrl+-",       "View"),
+        "fullscreen":       ("Toggle Fullscreen",     "F11",          "View"),
+        "rotate_left":      ("Rotate Left",           "[",            "View"),
+        "rotate_right":     ("Rotate Right",          "]",            "View"),
+        "reset_rotation":   ("Reset Rotation",        "",             "View"),
+        "single_page":      ("Single Page",           "",             "View"),
+        "double_page":      ("Double Page",           "",             "View"),
+        "toggle_warmth":    ("Toggle Warmth",         "",             "View"),
+        "toggle_thumbnails":("Toggle Thumbnails",     "Ctrl+Shift+T", "View"),
+        "toggle_ocr_panel": ("Toggle OCR Panel",      "Ctrl+Shift+P", "View"),
+        # File
+        "open_file":        ("Open File",             "Ctrl+O",       "File"),
+        "close_file":       ("Close File",            "Ctrl+W",       "File"),
+        # Bookmarks
+        "toggle_bookmark":  ("Toggle Bookmark",       "Ctrl+B",       "Bookmarks"),
+        "show_bookmarks":   ("Show Bookmarks",        "Ctrl+Shift+B", "Bookmarks"),
+        # OCR
+        "ocr_mode":         ("OCR Selection Mode",    "Ctrl+Shift+O", "OCR"),
+        "dict_lookup":      ("Dictionary Lookup",     "Ctrl+D",       "OCR"),
+    }
+
     def __init__(self):
         super().__init__()
 
@@ -3081,6 +3265,7 @@ class TakoReader(QMainWindow):
         self._ocr_worker: OCRWorker | None = None
         self._settings                     = QSettings("TakoReader", "TakoReaderJP")
         self._reading_mode                 = "rtl"
+        self._actions: dict                = {}  # action_id → QAction
         self._current_file                 = ""
         self._page_mode                    = "single"  # "single" | "double"
         self._rotation                     = 0          # 0, 90, 180, 270
@@ -3245,6 +3430,18 @@ class TakoReader(QMainWindow):
     def _build_menu(self):
         mb = self.main_menu
 
+        # ── Build all customisable QActions and store in self._actions ────────
+        def _act(action_id: str, label: str, slot, checkable=False, checked=False):
+            """Create a QAction with shortcut from settings (or default)."""
+            default = self.SHORTCUT_DEFAULTS.get(action_id, ("", "", ""))[1]
+            saved   = self._settings.value(f"shortcuts/{action_id}", default)
+            a = QAction(label, self, checkable=checkable, checked=checked)
+            if saved:
+                a.setShortcut(saved)
+            a.triggered.connect(slot)
+            self._actions[action_id] = a
+            return a
+
         # ── Tako Reader app menu ──
         app_menu = mb.addMenu("Tako Reader")
         about_act = QAction("About Tako Reader", self)
@@ -3260,12 +3457,10 @@ class TakoReader(QMainWindow):
         app_menu.addAction(quit_act_app)
 
         file_menu = mb.addMenu("File")
-        open_act  = QAction("Open…",        self, shortcut="Ctrl+O")
-        open_act.triggered.connect(self.open_file)
-        open_dir  = QAction("Open Folder…", self)
+        open_act = _act("open_file",  "Open…",  self.open_file)
+        open_dir = QAction("Open Folder…", self)
         open_dir.triggered.connect(self.open_folder)
-        close_act = QAction("Close",        self, shortcut="Ctrl+W")
-        close_act.triggered.connect(self.close_file)
+        close_act = _act("close_file", "Close", self.close_file)
         file_menu.addActions([open_act, open_dir])
         file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Open Recent")
@@ -3274,38 +3469,38 @@ class TakoReader(QMainWindow):
         file_menu.addAction(close_act)
 
         view_menu = mb.addMenu("View")
-        fit_w     = QAction("Fit Width",  self, shortcut="W")
-        fit_w.triggered.connect(lambda: self.page_view.set_fit_mode("fit_width"))
-        fit_p     = QAction("Fit Page",   self, shortcut="F")
-        fit_p.triggered.connect(lambda: self.page_view.set_fit_mode("fit_page"))
-        zoom_in   = QAction("Zoom In",   self, shortcut="Ctrl+=")
-        zoom_in.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale * 1.2))
-        zoom_out  = QAction("Zoom Out",  self, shortcut="Ctrl+-")
-        zoom_out.triggered.connect(lambda: self.page_view.set_scale(self.page_view._scale / 1.2))
+        fit_w    = _act("fit_width",  "Fit Width",
+                        lambda: self.page_view.set_fit_mode("fit_width"))
+        fit_p    = _act("fit_page",   "Fit Page",
+                        lambda: self.page_view.set_fit_mode("fit_page"))
+        zoom_in  = _act("zoom_in",    "Zoom In",
+                        lambda: self.page_view.set_scale(self.page_view._scale * 1.2))
+        zoom_out = _act("zoom_out",   "Zoom Out",
+                        lambda: self.page_view.set_scale(self.page_view._scale / 1.2))
 
-        self.act_thumbnails = QAction("Show Thumbnails", self, checkable=True, checked=True,
-                                       shortcut="Ctrl+Shift+T")
-        self.act_thumbnails.triggered.connect(self._toggle_thumbnails)
-        self.act_ocr_panel  = QAction("Show OCR Panel",  self, checkable=True, checked=True,
-                                       shortcut="Ctrl+Shift+P")
-        self.act_ocr_panel.triggered.connect(self._toggle_ocr_panel)
+        self.act_thumbnails = _act("toggle_thumbnails", "Show Thumbnails",
+                                   self._toggle_thumbnails, checkable=True, checked=True)
+        self.act_ocr_panel  = _act("toggle_ocr_panel",  "Show OCR Panel",
+                                   self._toggle_ocr_panel, checkable=True, checked=True)
 
         rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
         rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
-        fs_act = QAction("Enter Fullscreen", self, shortcut="F11")
-        fs_act.triggered.connect(lambda: self._exit_fullscreen()
-                                 if self.isFullScreen() else self._enter_fullscreen())
+        fs_act = _act("fullscreen", "Toggle Fullscreen",
+                      lambda: self._exit_fullscreen()
+                      if self.isFullScreen() else self._enter_fullscreen())
 
         view_menu.addActions([fit_w, fit_p, zoom_in, zoom_out])
         view_menu.addSeparator()
-        single_act = QAction("Single Page", self, checkable=True, checked=True)
-        double_act = QAction("Double Page", self, checkable=True)
-        single_act.triggered.connect(lambda: (self._set_page_mode("single"),
-                                              single_act.setChecked(True),
-                                              double_act.setChecked(False)))
-        double_act.triggered.connect(lambda: (self._set_page_mode("double"),
-                                              double_act.setChecked(True),
-                                              single_act.setChecked(False)))
+        single_act = _act("single_page", "Single Page",
+                          lambda: (self._set_page_mode("single"),
+                                   self._actions["single_page"].setChecked(True),
+                                   self._actions["double_page"].setChecked(False)),
+                          checkable=True, checked=True)
+        double_act = _act("double_page", "Double Page",
+                          lambda: (self._set_page_mode("double"),
+                                   self._actions["double_page"].setChecked(True),
+                                   self._actions["single_page"].setChecked(False)),
+                          checkable=True)
         self._menu_single_act = single_act
         self._menu_double_act = double_act
         view_menu.addActions([single_act, double_act])
@@ -3316,43 +3511,45 @@ class TakoReader(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(fs_act)
         view_menu.addSeparator()
-        rot_l = QAction("Rotate Left",  self, shortcut="[")
-        rot_l.triggered.connect(lambda: self._rotate(-90))
-        rot_r = QAction("Rotate Right", self, shortcut="]")
-        rot_r.triggered.connect(lambda: self._rotate(90))
-        rot_reset = QAction("Reset Rotation", self)
-        rot_reset.triggered.connect(self._reset_rotation)
+        rot_l     = _act("rotate_left",    "Rotate Left",    lambda: self._rotate(-90))
+        rot_r     = _act("rotate_right",   "Rotate Right",   lambda: self._rotate(90))
+        rot_reset = _act("reset_rotation", "Reset Rotation", self._reset_rotation)
         view_menu.addActions([rot_l, rot_r, rot_reset])
 
         nav_menu = mb.addMenu("Navigate")
         nav_menu.setMinimumWidth(230)
-        prev_a   = QAction("Previous Page", self, shortcut="Left")
-        prev_a.triggered.connect(self.prev_page)
-        next_a   = QAction("Next Page",     self, shortcut="Right")
-        next_a.triggered.connect(self.next_page)
+        prev_a = _act("prev_page",   "Previous Page", self.prev_page)
+        next_a = _act("next_page",   "Next Page",     self.next_page)
+        # Hidden actions for first/last (no menu entry needed)
+        _act("first_page", "First Page", lambda: self.go_to_page(0))
+        _act("last_page",  "Last Page",
+             lambda: self.go_to_page(len(self._pages) - 1))
         nav_menu.addActions([prev_a, next_a])
-        jump_act = QAction("Jump to Page…", self, shortcut="Ctrl+G")
-        jump_act.triggered.connect(self._start_page_jump)
+        jump_act = _act("jump_to_page", "Jump to Page…", self._start_page_jump)
         nav_menu.addAction(jump_act)
         nav_menu.addSeparator()
-        bm_toggle = QAction("Toggle Bookmark", self, shortcut="Ctrl+B")
-        bm_toggle.triggered.connect(self._toggle_bookmark)
-        bm_list   = QAction("Show Bookmarks…", self, shortcut="Ctrl+Shift+B")
-        bm_list.triggered.connect(self._show_bookmarks_popup)
+        bm_toggle = _act("toggle_bookmark", "Toggle Bookmark",  self._toggle_bookmark)
+        bm_list   = _act("show_bookmarks",  "Show Bookmarks…",  self._show_bookmarks_popup)
         nav_menu.addActions([bm_toggle, bm_list])
 
         ocr_menu = mb.addMenu("OCR")
-        self.act_ocr_mode = QAction("OCR Selection Mode", self,
-                                    shortcut="Ctrl+Shift+O", checkable=True)
-        self.act_ocr_mode.triggered.connect(self._toggle_ocr_mode)
+        self.act_ocr_mode = _act("ocr_mode", "OCR Selection Mode",
+                                 self._toggle_ocr_mode, checkable=True)
         ocr_menu.addAction(self.act_ocr_mode)
         check_ocr = QAction("Check OCR Installation…", self)
         check_ocr.triggered.connect(self._check_ocr)
         ocr_menu.addAction(check_ocr)
         ocr_menu.addSeparator()
-        dict_act = QAction("Dictionary Lookup", self, shortcut="Ctrl+D")
-        dict_act.triggered.connect(lambda: self.ocr_panel.lookup_shortcut())
+        dict_act = _act("dict_lookup", "Dictionary Lookup",
+                        lambda: self.ocr_panel.lookup_shortcut())
         ocr_menu.addAction(dict_act)
+
+        # Actions with no menu entry (warmth, single/double already added)
+        _act("toggle_warmth", "Toggle Warmth", self._toggle_warmth)
+
+        # Add all actions to main window so Qt shortcuts fire globally
+        for a in self._actions.values():
+            self.addAction(a)
 
 
 
@@ -4298,6 +4495,13 @@ class TakoReader(QMainWindow):
         if cb:
             cb(b64)
 
+    def _apply_shortcuts(self):
+        """Read shortcuts from QSettings and apply to all registered QActions."""
+        for action_id, action in self._actions.items():
+            default = self.SHORTCUT_DEFAULTS.get(action_id, ("","",""))[1]
+            saved   = self._settings.value(f"shortcuts/{action_id}", default)
+            action.setShortcut(saved if saved else "")
+
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox
         from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
@@ -4333,6 +4537,8 @@ class TakoReader(QMainWindow):
                 if dev != new_device:
                     OCRProcessManager._instances[dev]._stop()
                     del OCRProcessManager._instances[dev]
+            # Apply updated shortcuts to all actions
+            self._apply_shortcuts()
             self._toast(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
