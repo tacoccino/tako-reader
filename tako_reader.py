@@ -976,7 +976,13 @@ class TakoReader(QMainWindow):
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
         if event.type() == QEvent.Type.MouseMove and self._pages:
-            self._reset_cursor_timer()
+            # Only auto-hide cursor when moving over the page canvas
+            if obj is self.scroll.viewport() or obj is self.page_view:
+                self._reset_cursor_timer()
+            elif self._cursor_hidden:
+                # Moved off the canvas — restore immediately
+                self._restore_canvas_cursor()
+                self._cursor_hide_timer.stop()
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
             # Page-edit escape/focus-out handling
@@ -1367,15 +1373,22 @@ class TakoReader(QMainWindow):
 
     def _reset_cursor_timer(self):
         if self._cursor_hidden:
-            QApplication.restoreOverrideCursor()
-            self._cursor_hidden = False
+            self._restore_canvas_cursor()
         self._cursor_hide_timer.start(2000)
 
     def _hide_cursor(self):
         if not self._pages:
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+        # Only blank the cursor over the page canvas, not the whole app
+        self.scroll.viewport().setCursor(Qt.CursorShape.BlankCursor)
+        self.page_view.setCursor(Qt.CursorShape.BlankCursor)
         self._cursor_hidden = True
+
+    def _restore_canvas_cursor(self):
+        """Restore the normal cursor on the page canvas."""
+        self.scroll.viewport().unsetCursor()
+        self.page_view._update_cursor()  # restores arrow/crosshair based on OCR mode
+        self._cursor_hidden = False
 
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox
