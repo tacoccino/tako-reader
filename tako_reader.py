@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QComboBox, QFrame,
     QListWidgetItem, QSizePolicy, QRubberBand, QMessageBox,
     QProgressDialog, QMenuBar, QMenu, QCheckBox, QTextBrowser,
-    QLineEdit, QColorDialog, QSlider, QSpinBox
+    QLineEdit, QColorDialog, QSlider, QSpinBox, QTabWidget
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint, QThread, pyqtSignal,
@@ -1811,37 +1811,93 @@ class SettingsDialog(QDialog):
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
+    def _make_tab(self) -> tuple:
+        """Return (scroll_widget, inner_layout) for a tab page."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(24, 20, 24, 8)
+        lay.setSpacing(20)
+        scroll.setWidget(content)
+        return scroll, lay
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 16)
         root.setSpacing(0)
 
-        # Scrollable content area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; }")
+        tabs = QTabWidget()
+        tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #2a2a2a;
+                border-radius: 0px;
+                background: #1a1a1a;
+            }
+            QTabBar::tab {
+                min-width: 80px;
+                background: #1e1e1e; color: #888;
+                padding: 8px 15px; font-size: 9pt;
+                border: 1px solid #2a2a2a;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected { background: #1a1a1a; color: #fff; }
+            QTabBar::tab:hover:!selected { background: #252525; color: #ccc; }
+        """)
 
-        content = QWidget()
-        self._content_lay = QVBoxLayout(content)
-        self._content_lay.setContentsMargins(24, 20, 24, 8)
-        self._content_lay.setSpacing(20)
-
+        # ── General tab ──
+        gen_scroll, self._content_lay = self._make_tab()
         self._build_general_section()
-        self._build_ocr_section()
-        self._build_anki_section()
-
         self._content_lay.addStretch()
-        scroll.setWidget(content)
-        root.addWidget(scroll, stretch=1)
+        tabs.addTab(gen_scroll, "General")
 
-        # Divider
+        # ── Appearance tab (placeholder) ──
+        app_scroll, app_lay = self._make_tab()
+        placeholder = QLabel("Appearance options coming soon.\n\n"
+                             "Planned: light theme, accent colours.")
+        placeholder.setStyleSheet("color: #555; font-size: 9pt;")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        app_lay.addStretch()
+        app_lay.addWidget(placeholder)
+        app_lay.addStretch()
+        tabs.addTab(app_scroll, "Appearance")
+
+        # ── OCR tab ──
+        ocr_scroll, self._content_lay = self._make_tab()
+        self._build_ocr_section()
+        self._content_lay.addStretch()
+        tabs.addTab(ocr_scroll, "OCR")
+
+        # ── Anki tab ──
+        anki_scroll, self._content_lay = self._make_tab()
+        self._build_anki_section()
+        self._content_lay.addStretch()
+        tabs.addTab(anki_scroll, "Anki")
+
+        # ── Shortcuts tab (placeholder) ──
+        sc_scroll, sc_lay = self._make_tab()
+        sc_placeholder = QLabel("Shortcut customization coming soon.")
+        sc_placeholder.setStyleSheet("color: #555; font-size: 9pt;")
+        sc_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sc_lay.addStretch()
+        sc_lay.addWidget(sc_placeholder)
+        sc_lay.addStretch()
+        tabs.addTab(sc_scroll, "Shortcuts")
+
+        root.addWidget(tabs, stretch=1)
+
+        # Divider + Save/Cancel
         div = QFrame()
         div.setFrameShape(QFrame.Shape.HLine)
         div.setStyleSheet("color: #2a2a2a;")
         root.addWidget(div)
 
-        # Save / Cancel buttons
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save |
             QDialogButtonBox.StandardButton.Cancel
