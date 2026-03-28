@@ -12,8 +12,8 @@ REM ─────────────────────────�
 
 setlocal
 set APP_NAME=Tako Reader
-set ENTRY=tako_reader.py
-set ICON=icons\app-icon.ico
+set ENTRY=src\tako_reader.py
+set ICON=src\icons\app-icon.ico
 
 echo.
 echo  === Tako Reader — Windows Build ===
@@ -40,7 +40,7 @@ pyinstaller ^
     --name="%APP_NAME%" ^
     --windowed ^
     %ICON_FLAG% ^
-    --add-data="icons;icons" ^
+    --add-data="src\icons;icons" ^
     --hidden-import=fugashi ^
     --hidden-import=unidic_lite ^
     --hidden-import=jamdict ^

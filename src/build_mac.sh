@@ -13,8 +13,8 @@
 set -e
 
 APP_NAME="Tako Reader"
-ENTRY="src/tako_reader.py"
-ICON="src/icons/app-icon.icns"   # optional — skip if not present
+ENTRY="tako_reader.py"
+ICON="icons/app-icon.icns"   # optional — skip if not present
 
 echo "🐙 Building Tako Reader for macOS..."
 echo ""
@@ -60,7 +60,7 @@ pyinstaller \
     --name="$APP_NAME" \
     --windowed \
     $ICON_FLAG \
-    --add-data="src/icons:icons" \
+    --add-data="icons:icons" \
     "${HIDDEN_IMPORTS[@]}" \
     --collect-all=torch \
     --collect-data=unidic_lite \

@@ -23,4 +23,4 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 )
 
 REM Launch the app (start /b so this console closes immediately)
-start "" "%VENV_DIR%\Scripts\pythonw.exe" tako_reader.py %*
+start "" "%VENV_DIR%\Scripts\pythonw.exe" src\tako_reader.py %*
