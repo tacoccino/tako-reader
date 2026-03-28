@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QFont
 
 from anki import AnkiConnectWorker, AnkiFieldsWorker
+import theme
 
 # ─── Settings Dialog ─────────────────────────────────────────────────────────
 
@@ -91,25 +92,6 @@ class SettingsDialog(QDialog):
         root.setSpacing(0)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: 1px solid #2a2a2a;
-                border-radius: 0px;
-                background: #1a1a1a;
-            }
-            QTabBar::tab {
-                min-width: 80px;
-                background: #1e1e1e; color: #888;
-                padding: 8px 15px; font-size: 9pt;
-                border: 1px solid #2a2a2a;
-                border-bottom: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                margin-right: 2px;
-            }
-            QTabBar::tab:selected { background: #1a1a1a; color: #fff; }
-            QTabBar::tab:hover:!selected { background: #252525; color: #ccc; }
-        """)
 
         # ── General tab ──
         gen_scroll, self._content_lay = self._make_tab()
@@ -117,15 +99,10 @@ class SettingsDialog(QDialog):
         self._content_lay.addStretch()
         tabs.addTab(gen_scroll, "General")
 
-        # ── Appearance tab (placeholder) ──
-        app_scroll, app_lay = self._make_tab()
-        placeholder = QLabel("Appearance options coming soon.\n\n"
-                             "Planned: light theme, accent colours.")
-        placeholder.setStyleSheet("color: #555; font-size: 9pt;")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        app_lay.addStretch()
-        app_lay.addWidget(placeholder)
-        app_lay.addStretch()
+        # ── Appearance tab ──
+        app_scroll, self._content_lay = self._make_tab()
+        self._build_appearance_section()
+        self._content_lay.addStretch()
         tabs.addTab(app_scroll, "Appearance")
 
         # ── OCR tab ──
@@ -150,7 +127,7 @@ class SettingsDialog(QDialog):
         # Divider + Save/Cancel
         div = QFrame()
         div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet("color: #2a2a2a;")
+        div.setStyleSheet(f"color: {theme._active['border']};")
         root.addWidget(div)
 
         btn_box = QDialogButtonBox(
@@ -160,14 +137,6 @@ class SettingsDialog(QDialog):
         btn_box.setContentsMargins(24, 8, 24, 0)
         btn_box.accepted.connect(self._save)
         btn_box.rejected.connect(self.reject)
-        btn_box.setStyleSheet("""
-            QPushButton {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 6px;
-                padding: 6px 20px; font-size: 10pt; min-width: 80px;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
-        """)
         root.addWidget(btn_box)
 
     def _build_shortcuts_section(self, lay: QVBoxLayout):
@@ -177,7 +146,7 @@ class SettingsDialog(QDialog):
             f"Press Esc to clear.  Uses {'⌘' if __import__('platform').system() == 'Darwin' else 'Ctrl'} "
             f"for modifier keys."
         )
-        hint.setStyleSheet("color: #666; font-size: 8pt;")
+        hint.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
@@ -195,7 +164,7 @@ class SettingsDialog(QDialog):
             # Category header
             cat_lbl = QLabel(cat_name)
             cat_lbl.setStyleSheet(
-                "color: #888; font-size: 8pt; font-weight: bold;"
+                f"color: {theme._active['text_muted']}; font-size: 8pt; font-weight: bold;"
                 " padding-top: 8px;"
             )
             lay.addWidget(cat_lbl)
@@ -207,7 +176,7 @@ class SettingsDialog(QDialog):
 
                 name_lbl = QLabel(name)
                 name_lbl.setFixedWidth(180)
-                name_lbl.setStyleSheet("color: #ccc; font-size: 9pt;")
+                name_lbl.setStyleSheet(f"color: {theme._active['text_secondary']}; font-size: 9pt;")
                 row.addWidget(name_lbl)
 
                 editor = QKeySequenceEdit()
@@ -222,40 +191,40 @@ class SettingsDialog(QDialog):
                 container = QWidget()
                 container.setFixedWidth(150)
                 container.setFixedHeight(28)
-                container.setStyleSheet("""
-                    QWidget {
-                        background: #2a2a2a;
-                        border: 1px solid #555;
+                container.setStyleSheet(f"""
+                    QWidget {{
+                        background: {theme._active['input_bg']};
+                        border: 1px solid {theme._active['border_light']};
                         border-radius: 4px;
-                    }
+                    }}
                 """)
                 c_lay = QHBoxLayout(container)
                 c_lay.setContentsMargins(6, 0, 0, 0)
                 c_lay.setSpacing(0)
 
                 # Strip all styling from the editor itself
-                editor.setStyleSheet("""
-                    QKeySequenceEdit {
+                editor.setStyleSheet(f"""
+                    QKeySequenceEdit {{
                         background: transparent;
                         border: none;
-                        font-size: 9pt; color: #ddd;
-                    }
-                    QKeySequenceEdit QLineEdit {
+                        font-size: 9pt; color: {theme._active['text']};
+                    }}
+                    QKeySequenceEdit QLineEdit {{
                         background: transparent;
                         border: none;
-                        color: #ddd;
+                        color: {theme._active['text']};
                         font-size: 9pt;
-                    }
+                    }}
                 """)
                 c_lay.addWidget(editor)
 
                 # Highlight container border on focus
                 def _on_focus(focused, c=container):
                     c.setStyleSheet(
-                        "QWidget { background: #252f3d; border: 2px solid #3584e4;"
+                        f"QWidget {{ background: {theme._active['hover_bg']}; border: 2px solid {theme.ACCENT};"
                         " border-radius: 4px; }"
                         if focused else
-                        "QWidget { background: #2a2a2a; border: 1px solid #555;"
+                        f"QWidget {{ background: {theme._active['input_bg']}; border: 1px solid {theme._active['border_light']};"
                         " border-radius: 4px; }"
                     )
                 editor.installEventFilter(self)
@@ -266,13 +235,13 @@ class SettingsDialog(QDialog):
 
                 reset_btn = QPushButton("Reset")
                 reset_btn.setFixedWidth(54)
-                reset_btn.setStyleSheet("""
-                    QPushButton {
-                        background: transparent; color: #666;
-                        border: 1px solid #333; border-radius: 4px;
+                reset_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent; color: {theme._active['text_muted']};
+                        border: 1px solid {theme._active['border']}; border-radius: 4px;
                         padding: 2px 6px; font-size: 8pt;
-                    }
-                    QPushButton:hover { color: #ccc; border-color: #555; }
+                    }}
+                    QPushButton:hover {{ color: {theme._active['text']}; border-color: {theme._active['border_light']}; }}
                 """)
                 reset_btn.clicked.connect(
                     lambda _, e=editor, d=default: e.setKeySequence(d)
@@ -286,14 +255,6 @@ class SettingsDialog(QDialog):
         # Reset all button
         lay.addSpacing(12)
         reset_all = QPushButton("Reset All to Defaults")
-        reset_all.setStyleSheet("""
-            QPushButton {
-                background: #2a2a2a; color: #aaa;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 5px 14px; font-size: 9pt;
-            }
-            QPushButton:hover { background: #3a3a3a; color: #fff; }
-        """)
         def _reset_all():
             for aid, (_, default, _cat) in self._shortcut_defaults.items():
                 if aid in self._shortcut_editors:
@@ -316,17 +277,6 @@ class SettingsDialog(QDialog):
     def _section(self, title: str) -> QVBoxLayout:
         """Create a titled group box and return its inner layout."""
         box = QGroupBox(title)
-        box.setStyleSheet("""
-            QGroupBox {
-                color: #aaa; font-size: 9pt; font-weight: bold;
-                border: 1px solid #2a2a2a; border-radius: 6px;
-                margin-top: 8px; padding-top: 12px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin; subcontrol-position: top left;
-                left: 10px; padding: 0 4px;
-            }
-        """)
         lay = QVBoxLayout(box)
         lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(10)
@@ -338,13 +288,13 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         lbl = QLabel(label)
         lbl.setFixedWidth(140)
-        lbl.setStyleSheet("color: #ccc; font-size: 10pt;")
+        lbl.setStyleSheet(f"color: {theme._active['text_secondary']}; font-size: 10pt;")
         row.addWidget(lbl)
         row.addWidget(widget, stretch=1)
         layout.addLayout(row)
         if hint:
             hint_lbl = QLabel(hint)
-            hint_lbl.setStyleSheet("color: #666; font-size: 8pt;")
+            hint_lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
             hint_lbl.setWordWrap(True)
             layout.addWidget(hint_lbl)
 
@@ -354,16 +304,6 @@ class SettingsDialog(QDialog):
         lay = self._section("General")
 
         self.session_memory_check = QCheckBox()
-        self.session_memory_check.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #444; border-radius: 3px;
-                background: #2a2a2a;
-            }
-            QCheckBox::indicator:checked {
-                background: #3584e4; border-color: #3584e4;
-            }
-        """)
         self._row(lay, "Session Memory", self.session_memory_check,
                   hint="Remember the last opened file and page position. "
                        "Reopening Tako Reader will continue where you left off.")
@@ -375,16 +315,6 @@ class SettingsDialog(QDialog):
         preload_row_lay.setSpacing(8)
 
         self.preload_check = QCheckBox()
-        self.preload_check.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #444; border-radius: 3px;
-                background: #2a2a2a;
-            }
-            QCheckBox::indicator:checked {
-                background: #3584e4; border-color: #3584e4;
-            }
-        """)
         preload_row_lay.addWidget(self.preload_check)
 
         self.preload_spin = QSpinBox()
@@ -392,19 +322,6 @@ class SettingsDialog(QDialog):
         self.preload_spin.setValue(2)
         self.preload_spin.setSuffix(" pages")
         self.preload_spin.setFixedWidth(90)
-        self.preload_spin.setStyleSheet("""
-            QSpinBox {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 2px 6px; font-size: 9pt;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 16px; background: #3a3a3a; border: none;
-            }
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background: #3584e4;
-            }
-        """)
         preload_row_lay.addWidget(self.preload_spin)
         preload_row_lay.addStretch()
 
@@ -416,15 +333,80 @@ class SettingsDialog(QDialog):
                   hint="Load upcoming pages in the background for instant page turns.")
 
         self.keep_awake_check = QCheckBox()
-        self.keep_awake_check.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
-            }
-            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
-        """)
         self._row(lay, "Keep Screen Awake", self.keep_awake_check,
                   hint="Prevent the screen from sleeping while a file is open.")
+
+    # ── Appearance section ────────────────────────────────────────────────────
+
+    def _build_appearance_section(self):
+        lay = self._section("Theme")
+
+        self.theme_combo = QComboBox()
+        for tid, tdata in theme.THEMES.items():
+            self.theme_combo.addItem(tdata["name"], tid)
+        self._row(lay, "Theme", self.theme_combo,
+                  hint="Controls the overall UI colour scheme. "
+                       "The page background colour is a separate setting.")
+
+        # Accent colour
+        accent_lay = self._section("Accent Colour")
+
+        self._accent_btns: dict[str, QPushButton] = {}
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        for name, colour in theme.ACCENT_PRESETS:
+            btn = QPushButton()
+            btn.setFixedSize(30, 30)
+            btn.setToolTip(name)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {colour}; border: 2px solid transparent;"
+                f" border-radius: 15px;"
+                f" min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; padding: 0; }}"
+                f"QPushButton:hover {{ border-color: {theme._active['text']}; }}"
+                f"QPushButton:checked {{ border-color: {theme._active['text']}; }}"
+            )
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _, c=colour: self._select_accent(c))
+            btn_row.addWidget(btn)
+            self._accent_btns[colour] = btn
+
+        # Custom colour button
+        custom_btn = QPushButton("…")
+        custom_btn.setFixedSize(30, 30)
+        custom_btn.setToolTip("Custom colour…")
+        custom_btn.setStyleSheet(
+            f"QPushButton {{ min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;"
+            f" padding: 0; border-radius: 15px; }}"
+        )
+        custom_btn.clicked.connect(self._pick_custom_accent)
+        btn_row.addWidget(custom_btn)
+        btn_row.addStretch()
+        accent_lay.addLayout(btn_row)
+
+        # Preview swatch showing current selection
+        self._accent_preview = QLabel()
+        self._accent_preview.setFixedSize(120, 6)
+        self._accent_preview.setStyleSheet(
+            f"background: {theme.ACCENT}; border-radius: 3px; border: none;"
+        )
+        accent_lay.addWidget(self._accent_preview)
+
+    def _select_accent(self, colour: str):
+        """Update accent preview and radio state."""
+        for c, btn in self._accent_btns.items():
+            btn.setChecked(c == colour)
+        self._accent_preview.setStyleSheet(
+            f"background: {colour}; border-radius: 3px; border: none;"
+        )
+        self._pending_accent = colour
+
+    def _pick_custom_accent(self):
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor
+        current = getattr(self, "_pending_accent", theme.ACCENT)
+        colour = QColorDialog.getColor(QColor(current), self, "Choose Accent Colour")
+        if colour.isValid():
+            self._select_accent(colour.name())
 
     # ── OCR section ───────────────────────────────────────────────────────────
 
@@ -432,33 +414,6 @@ class SettingsDialog(QDialog):
         lay = self._section("OCR")
 
         self.ocr_device_combo = QComboBox()
-        self.ocr_device_combo.setStyleSheet("""
-            QComboBox {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 8px; font-size: 10pt;
-            }
-            QComboBox::drop-down {
-                border-left: 1px solid #444;
-                width: 24px;
-                border-top-right-radius: 4px;
-                border-bottom-right-radius: 4px;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                width: 0; height: 0;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid #888;
-            }
-            QComboBox::drop-down:hover { background: #3a3a4a; }
-            QComboBox::down-arrow:hover { border-top-color: #ddd; }
-            QComboBox QAbstractItemView {
-                background: #252525; color: #ddd;
-                selection-background-color: #3584e4;
-                border: 1px solid #3a3a3a;
-            }
-        """)
         self._populate_device_combo()
         self._row(lay, "OCR Device", self.ocr_device_combo,
                   hint="CPU works on all systems. CUDA requires a compatible NVIDIA GPU "
@@ -466,24 +421,10 @@ class SettingsDialog(QDialog):
                        "next OCR call.")
 
         self.ocr_clear_on_file_check = QCheckBox()
-        self.ocr_clear_on_file_check.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
-            }
-            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
-        """)
         self._row(lay, "Clear on File Change", self.ocr_clear_on_file_check,
                   hint="Clear the OCR panel when a new file is opened.")
 
         self.ocr_warmup_check = QCheckBox()
-        self.ocr_warmup_check.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #444; border-radius: 3px; background: #2a2a2a;
-            }
-            QCheckBox::indicator:checked { background: #3584e4; border-color: #3584e4; }
-        """)
         self._row(lay, "Load at Startup", self.ocr_warmup_check,
                   hint="Pre-load the OCR model when Tako Reader starts so the "
                        "first OCR call is instant. Adds a few seconds to launch time.")
@@ -510,35 +451,19 @@ class SettingsDialog(QDialog):
         # Connection row
         self.anki_url = QLineEdit()
         self.anki_url.setPlaceholderText("http://localhost:8765")
-        self.anki_url.setStyleSheet("""
-            QLineEdit {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 8px; font-size: 10pt;
-            }
-        """)
         self._row(lay, "AnkiConnect URL", self.anki_url)
 
         self.anki_key = QLineEdit()
         self.anki_key.setPlaceholderText("Leave blank if not set")
         self.anki_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.anki_key.setStyleSheet(self.anki_url.styleSheet())
         self._row(lay, "API Key", self.anki_key,
                   hint="Only needed if you have configured an API key in AnkiConnect.")
 
         # Connect button + status
         connect_row = QHBoxLayout()
         self._anki_status = QLabel("Not connected")
-        self._anki_status.setStyleSheet("color: #666; font-size: 9pt;")
+        self._anki_status.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
         connect_btn = QPushButton("Test Connection")
-        connect_btn.setStyleSheet("""
-            QPushButton {
-                background: #2a2a2a; color: #ccc;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 12px; font-size: 9pt;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
-        """)
         connect_btn.clicked.connect(self._anki_connect)
         self._connect_btn    = connect_btn
         self._connect_worker = None
@@ -550,35 +475,11 @@ class SettingsDialog(QDialog):
         # Deck picker
         self.anki_deck = QComboBox()
         self.anki_deck.setEditable(True)
-        self.anki_deck.setStyleSheet("""
-            QComboBox {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 8px; font-size: 10pt;
-            }
-            QComboBox::drop-down {
-                border-left: 1px solid #444; width: 24px;
-                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
-            }
-            QComboBox::down-arrow {
-                image: none; width: 0; height: 0;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 6px solid #888;
-            }
-            QComboBox::drop-down:hover { background: #3a3a4a; }
-            QComboBox::down-arrow:hover { border-top-color: #ddd; }
-            QComboBox QAbstractItemView {
-                background: #252525; color: #ddd;
-                selection-background-color: #3584e4; border: 1px solid #3a3a3a;
-            }
-        """)
         self._row(lay, "Deck", self.anki_deck)
 
         # Note type picker
         self.anki_model = QComboBox()
         self.anki_model.setEditable(True)
-        self.anki_model.setStyleSheet(self.anki_deck.styleSheet())
         self.anki_model.currentTextChanged.connect(self._anki_model_changed)
         self._row(lay, "Note Type", self.anki_model)
 
@@ -590,7 +491,7 @@ class SettingsDialog(QDialog):
 
         # Mapping hint
         self._field_hint = QLabel("Connect to Anki to configure field mapping.")
-        self._field_hint.setStyleSheet("color: #666; font-size: 8pt;")
+        self._field_hint.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
         self._field_hint.setWordWrap(True)
         lay.addWidget(self._field_hint)
 
@@ -600,7 +501,7 @@ class SettingsDialog(QDialog):
 
         self._connect_btn.setEnabled(False)
         self._anki_status.setText("Connecting…")
-        self._anki_status.setStyleSheet("color: #888; font-size: 9pt;")
+        self._anki_status.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
 
         self._connect_worker = AnkiConnectWorker(url, api_key)
         self._connect_worker.finished.connect(self._on_connect_finished)
@@ -668,38 +569,14 @@ class SettingsDialog(QDialog):
         )
 
         SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence", "Image"]
-        combo_style = """
-            QComboBox {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 3px 6px; font-size: 9pt;
-            }
-            QComboBox::drop-down {
-                border-left: 1px solid #444; width: 22px;
-                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
-            }
-            QComboBox::down-arrow {
-                image: none; width: 0; height: 0;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #888;
-            }
-            QComboBox::drop-down:hover { background: #3a3a4a; }
-            QComboBox::down-arrow:hover { border-top-color: #ddd; }
-            QComboBox QAbstractItemView {
-                background: #252525; color: #ddd;
-                selection-background-color: #3584e4;
-            }
-        """
 
         for field in fields:
             row = QHBoxLayout()
             lbl = QLabel(field)
             lbl.setFixedWidth(130)
-            lbl.setStyleSheet("color: #bbb; font-size: 9pt;")
+            lbl.setStyleSheet(f"color: {theme._active['text_secondary']}; font-size: 9pt;")
             combo = QComboBox()
             combo.addItems(SOURCES)
-            combo.setStyleSheet(combo_style)
 
             saved = self.app_settings.value(f"anki/field/{field}", "— skip —")
             if saved in SOURCES:
@@ -716,6 +593,16 @@ class SettingsDialog(QDialog):
 
     def _load_values(self):
         """Populate all widgets from saved QSettings values."""
+        # Appearance
+        saved_theme = self.app_settings.value("ui/theme", "dark")
+        for i in range(self.theme_combo.count()):
+            if self.theme_combo.itemData(i) == saved_theme:
+                self.theme_combo.setCurrentIndex(i)
+                break
+        saved_accent = self.app_settings.value("ui/accent", theme.DEFAULT_ACCENT)
+        self._pending_accent = saved_accent
+        self._select_accent(saved_accent)
+
         # General
         session_on = self.app_settings.value("general/session_memory", True, type=bool)
         self.session_memory_check.setChecked(session_on)
@@ -772,6 +659,11 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         """Persist all values to QSettings and close."""
+        # Appearance
+        self.app_settings.setValue("ui/theme", self.theme_combo.currentData())
+        self.app_settings.setValue("ui/accent",
+                                   getattr(self, "_pending_accent", theme.DEFAULT_ACCENT))
+
         self.app_settings.setValue("general/session_memory",
                                    self.session_memory_check.isChecked())
         self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
@@ -805,8 +697,5 @@ class SettingsDialog(QDialog):
     # ── Style ─────────────────────────────────────────────────────────────────
 
     def _apply_style(self):
-        self.setStyleSheet("""
-            QDialog { background: #1a1a1a; color: #e0e0e0; }
-            QLabel  { color: #e0e0e0; }
-        """)
+        self.setStyleSheet(theme.SETTINGS_STYLESHEET)
 

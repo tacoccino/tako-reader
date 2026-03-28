@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, QPoint, QSettings, QTimer
 from PyQt6.QtGui import QFont, QGuiApplication
 
 from utils import _ctrl
+import theme
 from anki import (
     make_furigana_html, anki_store_media,
     AnkiAddWorker, AnkiEditDialog,
@@ -105,23 +106,7 @@ class DictPopup(QWidget):
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            QWidget {
-                background: #252535;
-                color: #e0e0e0;
-                border: 1px solid #3a3a5a;
-                border-radius: 8px;
-            }
-            QLabel { border: none; background: transparent; }
-            QPushButton {
-                background: #2a2a3a; color: #ccc;
-                border: 1px solid #444; border-radius: 5px;
-                padding: 4px 10px; font-size: 9pt;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
-            QScrollBar:vertical { background: #252535; width: 6px; }
-            QScrollBar::handle:vertical { background: #4a4a6a; border-radius: 3px; }
-        """)
+        self.setStyleSheet(theme.POPUP_STYLESHEET)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -167,20 +152,20 @@ class DictPopup(QWidget):
             self._resize_to_content()
             return
 
-        anki_btn_style = """
-            QPushButton {
-                background: #4a3080; color: #ccc;
+        anki_btn_style = f"""
+            QPushButton {{
+                background: #4a3080; color: {theme._active['text_secondary']};
                 border: 1px solid #6a50a0; border-radius: 4px;
                 font-size: 8pt; padding: 2px 8px;
-            }
-            QPushButton:hover { background: #6a50c0; color: #fff; }
+            }}
+            QPushButton:hover {{ background: #6a50c0; color: #fff; }}
         """
 
         for i, entry in enumerate(entries):
             if i > 0:
                 div = QFrame()
                 div.setFrameShape(QFrame.Shape.HLine)
-                div.setStyleSheet("color: #3a3a5a; background: #3a3a5a; border: none; max-height: 1px;")
+                div.setStyleSheet(f"color: {theme._active['popup_border']}; background: {theme._active['popup_border']}; border: none; max-height: 1px;")
                 self._lay.addWidget(div)
 
             reading_str = "・".join(entry["readings"][:4]) if entry["readings"] else ""
@@ -189,7 +174,7 @@ class DictPopup(QWidget):
             header_row.setSpacing(8)
             word_lbl = QLabel(entry["word"])
             word_lbl.setFont(QFont("Noto Serif JP, serif", 20, QFont.Weight.Bold))
-            word_lbl.setStyleSheet("color: #ffffff; border: none; background: transparent;")
+            word_lbl.setStyleSheet(f"color: {theme._active['text']}; border: none; background: transparent;")
             word_lbl.setWordWrap(True)
             header_row.addWidget(word_lbl, stretch=1)
 
@@ -226,19 +211,19 @@ class DictPopup(QWidget):
                 self._add_label("Kanji", size=8, colour="#666", bold=True)
                 for kinfo in entry["kanji"]:
                     kw = QWidget()
-                    kw.setStyleSheet("background: #1e1e2e; border-radius: 6px; border: none;")
+                    kw.setStyleSheet(f"background: {theme._active['card_bg']}; border-radius: 6px; border: none;")
                     kl = QVBoxLayout(kw)
                     kl.setContentsMargins(10, 8, 10, 8)
                     kl.setSpacing(3)
 
                     char_lbl = QLabel(kinfo["char"])
                     char_lbl.setFont(QFont("Noto Serif JP, serif", 18, QFont.Weight.Bold))
-                    char_lbl.setStyleSheet("color: #fff; background: transparent; border: none;")
+                    char_lbl.setStyleSheet(f"color: {theme._active['text']}; background: transparent; border: none;")
                     kl.addWidget(char_lbl)
 
                     if kinfo["meaning"]:
                         m = QLabel(kinfo["meaning"])
-                        m.setStyleSheet("color: #aaa; font-size: 9pt; background: transparent; border: none;")
+                        m.setStyleSheet(f"color: {theme._active['text_secondary']}; font-size: 9pt; background: transparent; border: none;")
                         m.setWordWrap(True)
                         kl.addWidget(m)
 
@@ -394,12 +379,12 @@ class DictPopup(QWidget):
 
     def _show_toast(self, message: str, duration_ms: int = 2500):
         toast = QLabel(message, self)
-        toast.setStyleSheet("""
-            QLabel {
-                background: #2a2a3a; color: #eee;
-                border: 1px solid #5a5a8a; border-radius: 6px;
+        toast.setStyleSheet(f"""
+            QLabel {{
+                background: {theme._active['input_bg']}; color: {theme._active['text']};
+                border: 1px solid {theme._active['popup_border']}; border-radius: 6px;
                 padding: 6px 12px; font-size: 9pt;
-            }
+            }}
         """)
         toast.adjustSize()
         x = (self.width() - toast.width()) // 2

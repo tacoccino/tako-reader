@@ -103,10 +103,16 @@ class TakoReader(QMainWindow):
         self._adj_cache: dict               = {}   # (index, adj_key) → QPixmap
         self._adj_debounce                  = None  # QTimer, set up after build
 
+        # Initialise theme engine before building UI so load_icon() uses
+        # the correct icon variant (dark/light) from the very first call.
+        _tid    = self._settings.value("ui/theme",  "dark")
+        _accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
+        theme.apply_theme(_tid, _accent)
+
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
-        self._apply_dark_theme()
+        self._apply_theme()   # applies the stylesheet to the window
         self._restore_settings()
         self.setAcceptDrops(True)
         # Keep-awake and auto-hide cursor state — must be before installEventFilter
@@ -175,7 +181,7 @@ class TakoReader(QMainWindow):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.scroll.setStyleSheet("QScrollArea { border: none; background: #1a1a1a; }")
+        self.scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {theme.DEFAULT_BG}; }}")
 
         self.page_view = PageView()
         self.page_view.ocr_requested.connect(self._run_ocr)
@@ -194,29 +200,23 @@ class TakoReader(QMainWindow):
 
     def _build_nav_bar(self) -> QWidget:
         bar = QWidget()
+        bar.setObjectName("NavBar")
         bar.setFixedHeight(34)
-        bar.setStyleSheet("background: #141414; border-top: 1px solid #2a2a2a;")
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(42, 4, 42, 4)
-
-        nav_btn_style = """
-            QPushButton {
-                background: #141414; color: #ddd;
-                border-radius: 6px; padding: 0 10px; font-size: 10pt;
-            }
-            QPushButton:hover    { background: #3584e4; }
-            QPushButton:disabled { color: #555; }
-        """
 
         def _nav_btn(label, slot, icon_name=None):
             b = QPushButton()
             b.setFixedHeight(20)
-            b.setStyleSheet(nav_btn_style)
             b.clicked.connect(slot)
-            ic = load_icon(icon_name) if icon_name else QIcon()
-            if not ic.isNull():
-                b.setIcon(ic)
-                b.setIconSize(QSize(12, 12))
+            if icon_name:
+                ic = load_icon(icon_name)
+                if not ic.isNull():
+                    b.setIcon(ic)
+                    b.setIconSize(QSize(12, 12))
+                else:
+                    b.setText(label)
+                b.setProperty("icon_name", icon_name)
             else:
                 b.setText(label)
             return b
@@ -232,20 +232,12 @@ class TakoReader(QMainWindow):
         self._page_nav_stack.setFixedWidth(90)
 
         self.page_label = QLabel("— / —")
-        self.page_label.setStyleSheet("color: #aaa; font-size: 10pt;")
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_label.setToolTip("Click to jump to page")
         self.page_label.mousePressEvent = lambda _: self._start_page_jump()
 
         self.page_edit = QLineEdit()
         self.page_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_edit.setStyleSheet("""
-            QLineEdit {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #3584e4; border-radius: 4px;
-                font-size: 10pt; padding: 2px;
-            }
-        """)
         self.page_edit.returnPressed.connect(self._commit_page_jump)
         self.page_edit.installEventFilter(self)
 
@@ -395,20 +387,9 @@ class TakoReader(QMainWindow):
         lay.setContentsMargins(4, 0, 4, 0)
         lay.setSpacing(2)
 
-        btn_style = """
-            QPushButton {
-                background: transparent; color: #ccc;
-                border: none; border-radius: 4px;
-                padding: 4px 8px; font-size: 10pt;
-            }
-            QPushButton:hover   { background: #2e2e2e; color: #fff; }
-            QPushButton:checked { background: #3584e4; color: #fff; }
-        """
-
         def _btn(label, slot, checkable=False, icon_name=None, tooltip=None):
             b = QPushButton(label)
             b.setCheckable(checkable)
-            b.setStyleSheet(btn_style)
             b.clicked.connect(slot)
             if icon_name:
                 ic = load_icon(icon_name)
@@ -416,6 +397,7 @@ class TakoReader(QMainWindow):
                     b.setIcon(ic)
                     b.setIconSize(QSize(16, 16))
                     b.setText("")
+                b.setProperty("icon_name", icon_name)
             if tooltip:
                 b.setToolTip(tooltip)
             return b
@@ -423,7 +405,6 @@ class TakoReader(QMainWindow):
         def _sep():
             f = QFrame()
             f.setFrameShape(QFrame.Shape.VLine)
-            f.setStyleSheet("color: #333;")
             f.setFixedWidth(10)
             return f
 
@@ -478,7 +459,6 @@ class TakoReader(QMainWindow):
         # ── Right side: bookmarks + OCR panel toggle ──
         lay.addStretch()
         self._page_mode_btn = QPushButton("Single Page")
-        self._page_mode_btn.setStyleSheet(btn_style)
         self._page_mode_btn.clicked.connect(
             lambda: self._set_page_mode(
                 "double" if self._page_mode == "single" else "single"
@@ -615,19 +595,15 @@ class TakoReader(QMainWindow):
         )
         self.page_view.setStyleSheet(f"background-color: {colour};")
         # Update swatch button
-        self._bg_btn.setStyleSheet(
-            f"QPushButton {{ background: {colour}; border: 1px solid #555;"
-            f"border-radius: 4px; min-width: 18px; max-width: 18px;"
-            f"min-height: 18px; max-height: 18px; }}"
-            f"QPushButton:hover {{ border-color: #aaa; }}"
-        )
+        self._bg_btn.setStyleSheet(theme.bg_swatch_stylesheet(colour))
 
     def _show_bg_picker(self):
         from PyQt6.QtWidgets import QMenu
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
-            QMenu::item:selected { background: #3584e4; }
+        menu.setStyleSheet(f"""
+            QMenu {{ background: {theme._active['menu_bg']}; color: {theme._active['text']};
+                     border: 1px solid {theme._active['border']}; }}
+            QMenu::item:selected {{ background: {theme.ACCENT}; color: #fff; }}
         """)
         for name, hex_col in theme.BG_PRESETS:
             act = QAction(name, self)
@@ -1059,15 +1035,7 @@ class TakoReader(QMainWindow):
         # Parent to scroll area so position is relative to the page view
         toast = QLabel(message, self.scroll)
         toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        toast.setStyleSheet("""
-            QLabel {
-                background: rgba(0, 0, 0, 180);
-                color: #fff;
-                border-radius: 8px;
-                padding: 8px 20px;
-                font-size: 10pt;
-            }
-        """)
+        toast.setStyleSheet(theme.toast_stylesheet())
         toast.adjustSize()
         sw = self.scroll.width()
         sh = self.scroll.height()
@@ -1412,11 +1380,15 @@ class TakoReader(QMainWindow):
             "Research and Development Group (CC BY-SA 3.0)<br>"
             "OCR: manga-ocr by Maciej Budyś</small></p>"
         )
-        msg.setStyleSheet("QMessageBox { background: #1a1a1a; color: #e0e0e0; }"
-                          "QLabel { color: #e0e0e0; }")
+        msg.setStyleSheet(f"QMessageBox {{ background: {theme._active['window_bg']}; color: {theme._active['text']}; }}"
+                          f"QLabel {{ color: {theme._active['text']}; }}")
         msg.exec()
 
     def open_settings(self):
+        # Snapshot current theme/accent so we can detect changes
+        old_theme  = self._settings.value("ui/theme",  "dark")
+        old_accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
+
         dlg = SettingsDialog(self._settings,
                              shortcut_defaults=self.SHORTCUT_DEFAULTS,
                              parent=self)
@@ -1429,6 +1401,11 @@ class TakoReader(QMainWindow):
                     del OCRProcessManager._instances[dev]
             # Apply updated shortcuts to all actions
             self._apply_shortcuts()
+            # Check for theme/accent changes
+            new_theme  = self._settings.value("ui/theme",  "dark")
+            new_accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
+            if new_theme != old_theme or new_accent != old_accent:
+                self._refresh_theme()
             self._toast(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
@@ -1486,8 +1463,48 @@ class TakoReader(QMainWindow):
     # Theme
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _apply_dark_theme(self):
-        self.setStyleSheet(theme.DARK_THEME)
+    def _apply_theme(self):
+        """Apply the current theme + accent from QSettings."""
+        tid    = self._settings.value("ui/theme",  "dark")
+        accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
+        theme.apply_theme(tid, accent)
+        self.setStyleSheet(theme.APP_STYLESHEET)
+
+    def _refresh_theme(self):
+        """Re-apply the active theme to every widget after a theme change."""
+        self._apply_theme()
+        # Scroll area and page view keep their own bg colour (independent of UI theme)
+        bg = self._settings.value("ui/bg_colour", theme.DEFAULT_BG)
+        self._apply_bg_colour(bg)
+        # Cascade to child widgets
+        self.ocr_panel.refresh_theme()
+        self._adj_popup.refresh_theme()
+        self.thumb_list.setStyleSheet(f"""
+            QListWidget {{ background: {theme._active['panel_bg']}; border: none; }}
+            QListWidget::item {{ border-radius: 4px; }}
+            QListWidget::item:selected {{ background: {theme.ACCENT}; }}
+        """)
+        # Rebuild toolbar icons for the new variant
+        self._rebuild_toolbar_icons()
+
+    def _rebuild_toolbar_icons(self):
+        """Reload all icons after a theme variant change.
+        Every button created by _btn() and _nav_btn() stores its icon name
+        as a Qt property, so we just iterate all QPushButtons in the toolbar
+        and nav bar and reload from the current icons/<variant>/ folder."""
+        for container in (self._toolbar, self.nav_bar):
+            for btn in container.findChildren(QPushButton):
+                name = btn.property("icon_name")
+                if name:
+                    ic = load_icon(name)
+                    if not ic.isNull():
+                        btn.setIcon(ic)
+        # Bookmark button shows a state-dependent icon
+        if hasattr(self, "tb_bookmark_btn"):
+            self._update_bookmark_btn()
+        # Thumbnail and OCR panel toggles show a state-dependent icon
+        self._toggle_thumbnails(self.thumb_list.isVisible())
+        self._toggle_ocr_panel(self.ocr_panel.isVisible())
 
     # ─────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────

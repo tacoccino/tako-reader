@@ -38,7 +38,7 @@ class PageView(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setStyleSheet("background-color: #1a1a1a;")
+        self.setStyleSheet(f"background-color: {theme._active['window_bg']};")
 
         self._pixmap_orig: QPixmap | None = None
         self._scale    = 1.0
@@ -259,16 +259,7 @@ class OCRCard(QWidget):
         self.browser = HoverTextBrowser()
         self.browser.setOpenLinks(False)
         self.browser.setFont(QFont("Noto Serif JP, serif", 16))
-        self.browser.setStyleSheet(f"""
-            QTextBrowser {{
-                background: {theme.BG_COLOUR};
-                color: {theme.TEXT_COLOUR};
-                border: none;
-                border-radius: 6px;
-                padding: 6px 6px 24px 6px;
-                font-size: 18px;
-            }}
-        """)
+        self.browser.setStyleSheet(theme.ocr_browser_stylesheet())
         self.browser.anchorClicked.connect(self._on_word_clicked)
         self.browser.hovered_anchor_changed.connect(self._on_hover_changed)
         self.browser.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -287,7 +278,6 @@ class OCRCard(QWidget):
 
         self._merge_btn = QPushButton()
         self._merge_btn.setToolTip("Merge with card above")
-        self._merge_btn.setStyleSheet(theme.BTN_SUBTLE)
         self._merge_btn.setFixedSize(22, 18)
         ic_merge = load_icon("merge")
         if not ic_merge.isNull():
@@ -300,7 +290,6 @@ class OCRCard(QWidget):
 
         copy_btn = QPushButton()
         copy_btn.setToolTip("Copy text")
-        copy_btn.setStyleSheet(theme.BTN_SUBTLE)
         copy_btn.setFixedSize(22, 18)
         ic_copy = load_icon("copy")
         if not ic_copy.isNull():
@@ -315,7 +304,6 @@ class OCRCard(QWidget):
 
         dismiss_btn = QPushButton()
         dismiss_btn.setToolTip("Dismiss")
-        dismiss_btn.setStyleSheet(theme.BTN_SUBTLE)
         dismiss_btn.setFixedSize(22, 18)
         ic_dismiss = load_icon("remove")
         if not ic_dismiss.isNull():
@@ -337,6 +325,12 @@ class OCRCard(QWidget):
     def set_segmentation(self, on: bool):
         self._segmentation_on = on
         self._hovered_word = ""
+        self._render()
+
+    def refresh_theme(self):
+        """Re-apply theme styles and re-render text with current colours."""
+        self.setStyleSheet(theme.CARD_STYLE)
+        self.browser.setStyleSheet(theme.ocr_browser_stylesheet())
         self._render()
 
     def _render(self):
@@ -396,13 +390,13 @@ class OCRCard(QWidget):
 
     def _show_context_menu(self, pos):
         menu = self.browser.createStandardContextMenu()
-        menu.setStyleSheet("""
-            QMenu {
-                background: #252535; color: #e0e0e0;
-                border: 1px solid #3a3a5a;
-            }
-            QMenu::item:selected { background: #3584e4; color: #fff; }
-            QMenu::separator { background: #3a3a5a; height: 1px; margin: 2px 8px; }
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: {theme._active['popup_bg']}; color: {theme._active['text']};
+                border: 1px solid {theme._active['popup_border']};
+            }}
+            QMenu::item:selected {{ background: {theme.ACCENT}; color: #fff; }}
+            QMenu::separator {{ background: {theme._active['popup_border']}; height: 1px; margin: 2px 8px; }}
         """)
         menu.addSeparator()
         if self._segmentation_on:
@@ -474,28 +468,20 @@ class OCRPanel(QWidget):
 
         self.ocr_indicator = QLabel("⬤")
         self.ocr_indicator.setToolTip("OCR status: idle")
-        self.ocr_indicator.setStyleSheet("color: #444; font-size: 8pt;")
+        self.ocr_indicator.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
         self.ocr_indicator.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         header_row.addWidget(self.ocr_indicator)
 
-        title = QLabel("OCR / Text")
-        title.setStyleSheet("color: #888; font-size: 9pt;")
-        title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        header_row.addWidget(title, stretch=1)
+        self._title = QLabel("OCR / Text")
+        self._title.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(self._title, stretch=1)
 
         self.seg_check = QPushButton("Segment")
         self.seg_check.setCheckable(True)
         self.seg_check.setChecked(False)
         self.seg_check.setToolTip("Tokenise text into words.\nClick a word to look it up.")
-        self.seg_check.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #666;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 2px 8px; font-size: 9pt;
-            }
-            QPushButton:hover   { color: #aaa; border-color: #666; }
-            QPushButton:checked { background: #3584e4; color: #fff; border-color: #3584e4; }
-        """)
+        self.seg_check.setStyleSheet(theme.segment_btn_stylesheet())
         self.seg_check.clicked.connect(self._on_seg_toggled)
         header_row.addWidget(self.seg_check)
         layout.addLayout(header_row)
@@ -622,6 +608,17 @@ class OCRPanel(QWidget):
     def set_status(self, msg: str):
         self.status.setText(msg)
 
+    def refresh_theme(self):
+        """Re-apply theme to panel header, segment button, and all cards."""
+        self._title.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
+        self.seg_check.setStyleSheet(theme.segment_btn_stylesheet())
+        for card in self._cards:
+            card.refresh_theme()
+        # Recreate dict popup so it picks up new styles
+        if self._app_settings:
+            self._dict_popup = DictPopup(self._app_settings,
+                                         main_window=getattr(self, '_main_window', None))
+
     def lookup_shortcut(self):
         """Ctrl+D: look up last hovered word across all cards."""
         if self._segmentation_on:
@@ -675,42 +672,20 @@ class BookmarkPopup(QWidget):
         self.setMaximumWidth(420)
         self.setMaximumHeight(480)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            QWidget {
-                background: #252535; color: #e0e0e0;
-                border: 1px solid #3a3a5a; border-radius: 8px;
-            }
-            QLabel   { border: none; background: transparent; }
-            QLineEdit {
-                background: #1e1e2e; color: #ddd;
-                border: 1px solid #3a3a5a; border-radius: 4px;
-                padding: 2px 6px; font-size: 9pt;
-            }
-            QPushButton {
-                background: #2a2a3a; color: #ccc;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 3px 10px; font-size: 9pt;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
-            QScrollBar:vertical { background: #252535; width: 6px; }
-            QScrollBar::handle:vertical { background: #4a4a6a; border-radius: 3px; }
-        """)
+        self.setStyleSheet(theme.POPUP_STYLESHEET)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        header = QWidget()
-        header.setStyleSheet(
-            "background: #1e1e2e; border-bottom: 1px solid #3a3a5a;"
-            " border-top-left-radius: 8px; border-top-right-radius: 8px;"
-        )
-        hl = QHBoxLayout(header)
+        self._header = QWidget()
+        self._header.setStyleSheet(theme.popup_header_stylesheet())
+        hl = QHBoxLayout(self._header)
         hl.setContentsMargins(14, 10, 14, 10)
-        title = QLabel("Bookmarks")
-        title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        title.setStyleSheet("color: #fff; background: transparent; border: none;")
-        hl.addWidget(title)
-        outer.addWidget(header)
+        self._title = QLabel("Bookmarks")
+        self._title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self._title.setStyleSheet(f"color: {theme._active['text']}; background: transparent; border: none;")
+        hl.addWidget(self._title)
+        outer.addWidget(self._header)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -736,7 +711,7 @@ class BookmarkPopup(QWidget):
                 item.widget().deleteLater()
         if not bookmarks:
             empty = QLabel("No bookmarks yet.\nUse the bookmark button to add one.")
-            empty.setStyleSheet("color: #666; font-size: 9pt; background: transparent; border: none;")
+            empty.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt; background: transparent; border: none;")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._list_lay.addWidget(empty)
         else:
@@ -749,10 +724,12 @@ class BookmarkPopup(QWidget):
         page = bm["page"]
         name = bm.get("name", f"Page {page + 1}")
         card = QWidget()
+        t = theme._active
+        a = theme.ACCENT
         card.setStyleSheet(
-            "background: #2a2a4a; border: 1px solid #4a4a7a; border-radius: 6px;"
+            f"background: {t['hover_bg']}; border: 1px solid {a}; border-radius: 6px;"
             if page == current_page else
-            "background: #1e1e2e; border: 1px solid #3a3a5a; border-radius: 6px;"
+            f"background: {t['card_bg']}; border: 1px solid {t['popup_border']}; border-radius: 6px;"
         )
         cl = QHBoxLayout(card)
         cl.setContentsMargins(10, 8, 10, 8)
@@ -762,8 +739,8 @@ class BookmarkPopup(QWidget):
         page_lbl.setFixedWidth(36)
         page_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         page_lbl.setStyleSheet(
-            "color: #3584e4; font-size: 8pt; font-weight: bold;"
-            " background: transparent; border: none;"
+            f"color: {a}; font-size: 8pt; font-weight: bold;"
+            f" background: transparent; border: none;"
         )
         cl.addWidget(page_lbl)
 
@@ -781,12 +758,12 @@ class BookmarkPopup(QWidget):
 
         del_btn = QPushButton("✕")
         del_btn.setFixedWidth(28)
-        del_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #888;
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {t['text_muted']};
                 border: none; font-size: 10pt; padding: 0;
-            }
-            QPushButton:hover { color: #e74c3c; background: transparent; }
+            }}
+            QPushButton:hover {{ color: #e74c3c; background: transparent; }}
         """)
         del_btn.clicked.connect(lambda _, p=page: self.remove_requested.emit(p))
         cl.addWidget(del_btn)
@@ -835,27 +812,10 @@ class ImageAdjustPopup(QWidget):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setMinimumWidth(300)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            QWidget {
-                background: #252535; color: #e0e0e0;
-                border: 1px solid #3a3a5a; border-radius: 8px;
-            }
-            QLabel { border: none; background: transparent; }
-            QSlider::groove:horizontal {
-                height: 4px; background: #3a3a5a; border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                width: 14px; height: 14px; margin: -5px 0;
-                background: #3584e4; border-radius: 7px;
-            }
-            QSlider::sub-page:horizontal { background: #3584e4; border-radius: 2px; }
-            QPushButton {
-                background: #2a2a3a; color: #ccc;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 14px; font-size: 9pt;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
-        """)
+        self.setStyleSheet(
+            theme.POPUP_STYLESHEET +
+            theme.slider_popup_stylesheet()
+        )
 
         # Default values
         self.brightness = 100
@@ -866,6 +826,7 @@ class ImageAdjustPopup(QWidget):
 
         self._sliders: dict[str, QSlider] = {}
         self._val_labels: dict[str, QLabel] = {}
+        self._icon_labels: list[tuple[QLabel, str]] = []  # (label, icon_name)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -873,15 +834,12 @@ class ImageAdjustPopup(QWidget):
 
         # Header
         header = QWidget()
-        header.setStyleSheet(
-            "background: #1e1e2e; border-bottom: 1px solid #3a3a5a;"
-            " border-top-left-radius: 8px; border-top-right-radius: 8px;"
-        )
+        header.setStyleSheet(theme.popup_header_stylesheet())
         hl = QHBoxLayout(header)
         hl.setContentsMargins(14, 10, 10, 10)
         title = QLabel("Image Adjustments")
         title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        title.setStyleSheet("color: #fff; background: transparent; border: none;")
+        title.setStyleSheet(f"color: {theme._active['text']}; background: transparent; border: none;")
         hl.addWidget(title, stretch=1)
         outer.addWidget(header)
 
@@ -903,12 +861,13 @@ class ImageAdjustPopup(QWidget):
             icon_lbl.setFixedSize(16, 16)
             if not ic.isNull():
                 icon_lbl.setPixmap(ic.pixmap(16, 16))
+            self._icon_labels.append((icon_lbl, icon_name))
             row.addWidget(icon_lbl)
 
             # Label
             name_lbl = QLabel(label)
             name_lbl.setFixedWidth(72)
-            name_lbl.setStyleSheet("color: #bbb; font-size: 9pt; background: transparent; border: none;")
+            name_lbl.setStyleSheet(f"color: {theme._active['text_secondary']}; font-size: 9pt; background: transparent; border: none;")
             row.addWidget(name_lbl)
 
             # Slider
@@ -921,7 +880,7 @@ class ImageAdjustPopup(QWidget):
             val_lbl = QLabel(f"{default}%")
             val_lbl.setFixedWidth(38)
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            val_lbl.setStyleSheet("color: #888; font-size: 8pt; background: transparent; border: none;")
+            val_lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt; background: transparent; border: none;")
 
             def _on_change(v, a=attr, lbl=val_lbl):
                 setattr(self, a, v)
@@ -934,9 +893,9 @@ class ImageAdjustPopup(QWidget):
             def _on_context_menu(pos, s=slider, d=default, a=attr, lbl=val_lbl):
                 from PyQt6.QtWidgets import QMenu
                 menu = QMenu(s)
-                menu.setStyleSheet("""
-                    QMenu { background: #252525; color: #ddd; border: 1px solid #3a3a3a; }
-                    QMenu::item:selected { background: #3584e4; }
+                menu.setStyleSheet(f"""
+                    QMenu {{ background: {theme._active['menu_bg']}; color: {theme._active['text']}; border: 1px solid {theme._active['border']}; }}
+                    QMenu::item:selected {{ background: {theme.ACCENT}; }}
                 """)
                 reset_act = menu.addAction("Reset")
                 if menu.exec(s.mapToGlobal(pos)) == reset_act:
@@ -954,21 +913,21 @@ class ImageAdjustPopup(QWidget):
             bl.addLayout(row)
 
         # Reset button
-        reset_btn = QPushButton()
-        reset_btn.setToolTip("Reset all adjustments")
+        self._reset_btn = QPushButton()
+        self._reset_btn.setToolTip("Reset all adjustments")
         ic_reset = load_icon("adj-reset")
         if not ic_reset.isNull():
-            reset_btn.setIcon(ic_reset)
-            reset_btn.setIconSize(QSize(14, 14))
-            reset_btn.setText("")
-            reset_btn.setFixedSize(28, 24)
+            self._reset_btn.setIcon(ic_reset)
+            self._reset_btn.setIconSize(QSize(14, 14))
+            self._reset_btn.setText("")
+            self._reset_btn.setFixedSize(28, 24)
         else:
-            reset_btn.setText("Reset")
-        reset_btn.clicked.connect(self.reset)
+            self._reset_btn.setText("Reset")
+        self._reset_btn.clicked.connect(self.reset)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_row.addWidget(reset_btn)
+        btn_row.addWidget(self._reset_btn)
         bl.addLayout(btn_row)
 
         outer.addWidget(body)
@@ -1005,6 +964,17 @@ class ImageAdjustPopup(QWidget):
         if y + self.height() > sg.bottom(): y = global_pos.y() - self.height() - 6
         self.move(x, y)
         self.show()
+
+    def refresh_theme(self):
+        """Re-apply theme styles and reload icons."""
+        self.setStyleSheet(theme.POPUP_STYLESHEET + theme.slider_popup_stylesheet())
+        for icon_lbl, icon_name in self._icon_labels:
+            ic = load_icon(icon_name)
+            if not ic.isNull():
+                icon_lbl.setPixmap(ic.pixmap(16, 16))
+        ic_reset = load_icon("adj-reset")
+        if not ic_reset.isNull():
+            self._reset_btn.setIcon(ic_reset)
 
 
 # ─── Marquee selection overlay ───────────────────────────────────────────────
@@ -1269,10 +1239,10 @@ class ThumbnailList(QListWidget):
         self.setFixedWidth(145)
         self.setIconSize(QSize(90, 120))
         self.setSpacing(4)
-        self.setStyleSheet("""
-            QListWidget { background: #121212; border: none; }
-            QListWidget::item { border-radius: 4px; }
-            QListWidget::item:selected { background: #3584e4; }
+        self.setStyleSheet(f"""
+            QListWidget {{ background: {theme._active['panel_bg']}; border: none; }}
+            QListWidget::item {{ border-radius: 4px; }}
+            QListWidget::item:selected {{ background: {theme.ACCENT}; }}
         """)
         self.itemClicked.connect(lambda item: self.page_selected.emit(self.row(item)))
 

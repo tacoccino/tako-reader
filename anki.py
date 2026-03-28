@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings
 from PyQt6.QtGui import QPixmap, QFont
 
 from utils import load_icon
+import theme
 
 
 # ─── Furigana helper ─────────────────────────────────────────────────────────
@@ -208,20 +209,20 @@ class AnkiEditDialog(QDialog):
         self.setMinimumWidth(420)
         self._image_b64   = image_b64
         self._main_window = main_window
-        self.setStyleSheet("""
-            QDialog  { background: #1a1a1a; color: #e0e0e0; }
-            QLabel   { color: #aaa; font-size: 9pt; }
-            QTextEdit, QLineEdit {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
+        self.setStyleSheet(f"""
+            QDialog  {{ background: {theme._active['window_bg']}; color: {theme._active['text']}; }}
+            QLabel   {{ color: {theme._active['text_secondary']}; font-size: 9pt; }}
+            QTextEdit, QLineEdit {{
+                background: {theme._active['input_bg']}; color: {theme._active['text']};
+                border: 1px solid {theme._active['border_light']}; border-radius: 4px;
                 padding: 4px 6px; font-size: 10pt;
-            }
-            QPushButton {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 5px;
+            }}
+            QPushButton {{
+                background: {theme._active['input_bg']}; color: {theme._active['text']};
+                border: 1px solid {theme._active['border_light']}; border-radius: 5px;
                 padding: 5px 18px; font-size: 10pt;
-            }
-            QPushButton:hover { background: #3584e4; color: #fff; border-color: #3584e4; }
+            }}
+            QPushButton:hover {{ background: {theme.ACCENT}; color: #fff; border-color: {theme.ACCENT}; }}
         """)
 
         root = QVBoxLayout(self)
@@ -231,13 +232,6 @@ class AnkiEditDialog(QDialog):
         furigana_html = make_furigana_html(word, reading)
 
         self._editors: dict[str, QWidget] = {}
-        field_style = """
-            QLineEdit, QTextEdit {
-                background: #2a2a2a; color: #ddd;
-                border: 1px solid #444; border-radius: 4px;
-                padding: 4px 6px; font-size: 10pt;
-            }
-        """
         for label, value, multiline in [
             ("Word",       word,          False),
             ("Reading",    reading,       False),
@@ -251,10 +245,8 @@ class AnkiEditDialog(QDialog):
                 w = QTextEdit()
                 w.setPlainText(value)
                 w.setFixedHeight(72)
-                w.setStyleSheet(field_style)
             else:
                 w = QLineEdit(value)
-                w.setStyleSheet(field_style)
             root.addWidget(w)
             self._editors[label] = w
 
@@ -263,7 +255,7 @@ class AnkiEditDialog(QDialog):
             img_lbl = QLabel("Image")
             root.addWidget(img_lbl)
             self._img_status = QLabel("No image selected")
-            self._img_status.setStyleSheet("color: #666; font-size: 9pt;")
+            self._img_status.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
             root.addWidget(self._img_status)
 
             self._img_preview = QLabel()
@@ -271,20 +263,20 @@ class AnkiEditDialog(QDialog):
             self._img_preview.hide()
             root.addWidget(self._img_preview)
 
-            _btn_style = """
-                QPushButton {
-                    background: #2a2a3a; color: #ccc;
-                    border: 1px solid #444; border-radius: 4px;
+            _btn_style = f"""
+                QPushButton {{
+                    background: {theme._active['input_bg']}; color: {theme._active['text_secondary']};
+                    border: 1px solid {theme._active['border_light']}; border-radius: 4px;
                     padding: 4px 10px; font-size: 9pt;
-                }
-                QPushButton:hover { background: #3584e4; color: #fff; }
+                }}
+                QPushButton:hover {{ background: {theme.ACCENT}; color: #fff; }}
             """
-            _flat_icon_btn = """
-                QPushButton {
+            _flat_icon_btn = f"""
+                QPushButton {{
                     background: transparent; border: none;
                     border-radius: 4px; padding: 4px;
-                }
-                QPushButton:hover { background: #2a2a3a; }
+                }}
+                QPushButton:hover {{ background: {theme._active['hover_bg']}; }}
             """
             img_btns = QHBoxLayout()
             img_btns.setSpacing(4)
@@ -356,7 +348,7 @@ class AnkiEditDialog(QDialog):
             except Exception:
                 pass
         self._img_status.setText("No image selected")
-        self._img_status.setStyleSheet("color: #666; font-size: 9pt;")
+        self._img_status.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
         self._img_preview.hide()
 
     def _select_image(self):
