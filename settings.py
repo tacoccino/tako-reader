@@ -6,6 +6,7 @@ and customisable keyboard shortcuts.
 
 import sys
 import subprocess
+import platform
 import json as _json
 
 from PyQt6.QtWidgets import (
@@ -18,14 +19,14 @@ from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QFont
 
 from anki import AnkiConnectWorker, AnkiFieldsWorker
+from utils import is_frozen
 import theme
 
 # ─── Settings Dialog ─────────────────────────────────────────────────────────
 
 def _probe_cuda_devices() -> list[dict]:
     """Probe for CUDA devices via subprocess so DLL crashes cannot affect the app."""
-    import subprocess, json as _json
-    probe = (
+    _PROBE_SCRIPT = (
         "import json, sys\n"
         "try:\n"
         "    import torch\n"
@@ -38,10 +39,15 @@ def _probe_cuda_devices() -> list[dict]:
         "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
     )
     try:
-        result = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True, text=True, timeout=15
-        )
+        if is_frozen():
+            cmd = [sys.executable, "--cuda-probe"]
+        else:
+            cmd = [sys.executable, "-c", _PROBE_SCRIPT]
+        kwargs = {}
+        if platform.system() == "Windows":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                                **kwargs)
         if result.stdout.strip():
             data = _json.loads(result.stdout.strip().splitlines()[-1])
             if data.get("ok"):

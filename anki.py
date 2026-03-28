@@ -4,7 +4,6 @@ AnkiConnect helpers, background workers, furigana generation,
 and the card-edit dialog.
 """
 
-import webbrowser
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit,
     QPushButton, QDialogButtonBox, QFileDialog,

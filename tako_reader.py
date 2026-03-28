@@ -13,30 +13,26 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QScrollArea,
-    QDialog, QFrame,
-    QSizePolicy, QMessageBox,
-    QProgressDialog, QMenu,
-    QLineEdit, QColorDialog,
+    QDialog, QFrame, QMessageBox,
+    QProgressDialog, QLineEdit,
 )
 from PyQt6.QtCore import (
     Qt, QSize, QRect, QPoint,
     QSettings, QTimer,
 )
 from PyQt6.QtGui import (
-    QPixmap, QImage, QAction, QFont, QColor,
-    QCursor, QIcon, QGuiApplication, QPainter, QBrush, QPen, QTransform,
+    QPixmap, QImage, QAction,
+    QIcon, QPainter, QTransform,
 )
 
 # ─── Module imports ──────────────────────────────────────────────────────────
 
-from utils import load_icon, _ctrl, dlog, DEBUG
+from utils import load_icon, _ctrl, dlog, DEBUG, is_frozen
 import theme
-from anki import make_furigana_html, AnkiConnectWorker
-from ocr import OCRProcessManager, OCRWorker, OCRWarmupWorker
-from dictionary import DictPopup
-from loaders import load_pages_from_path, IMAGE_EXTS
+from ocr import OCRProcessManager, OCRWorker, OCRWarmupWorker, shutdown_ocr, _InProcessModel
+from loaders import load_pages_from_path
 from widgets import (
-    PageView, HoverTextBrowser, OCRCard, OCRPanel,
+    PageView, OCRPanel,
     PagePreloadWorker, BookmarkPopup, ImageAdjustPopup,
     MarqueeOverlay, ThumbnailList,
 )
@@ -625,6 +621,7 @@ class TakoReader(QMainWindow):
         menu.exec(btn_pos)
 
     def _pick_custom_bg(self):
+        from PyQt6.QtWidgets import QColorDialog
         from PyQt6.QtGui import QColor
         current = self._settings.value("ui/bg_colour", theme.DEFAULT_BG)
         colour = QColorDialog.getColor(QColor(current), self, "Choose Background Colour")
@@ -1188,10 +1185,15 @@ class TakoReader(QMainWindow):
         if self._ocr_worker and self._ocr_worker.isRunning():
             return
         device = self._settings.value("ocr/device", "cpu")
-        # If the process isn't alive yet, this is a lazy first load
-        mgr = OCRProcessManager.get(device)
-        if not mgr.is_alive():
-            self.ocr_panel.set_ocr_state("loading")
+        # Check if the model is loaded yet — show loading indicator if not
+        if is_frozen():
+            model = _InProcessModel.get(device)
+            if not model._ready:
+                self.ocr_panel.set_ocr_state("loading")
+        else:
+            mgr = OCRProcessManager.get(device)
+            if not mgr.is_alive():
+                self.ocr_panel.set_ocr_state("loading")
         self.ocr_panel.set_status(f"⏳ Running OCR on {device}…")
         self._ocr_worker = OCRWorker(image, rect, device=device)
         self._ocr_worker.result_ready.connect(self.ocr_panel.set_text)
@@ -1393,12 +1395,16 @@ class TakoReader(QMainWindow):
                              shortcut_defaults=self.SHORTCUT_DEFAULTS,
                              parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            # Restart any cached OCR process so next call uses the new device
+            # Restart any cached OCR backend so next call uses the new device
             new_device = self._settings.value("ocr/device", "cpu")
+            # Shut down any backends for a different device
             for dev in list(OCRProcessManager._instances.keys()):
                 if dev != new_device:
                     OCRProcessManager._instances[dev]._stop()
                     del OCRProcessManager._instances[dev]
+            for dev in list(_InProcessModel._instances.keys()):
+                if dev != new_device:
+                    del _InProcessModel._instances[dev]
             # Apply updated shortcuts to all actions
             self._apply_shortcuts()
             # Check for theme/accent changes
@@ -1675,7 +1681,7 @@ class TakoReader(QMainWindow):
         self._settings.setValue("ui/segment_on",     self.ocr_panel.seg_check.isChecked())
         self._settings.setValue("ui/page_mode",      self._page_mode)
         self._settings.setValue("ui/fit_mode",       self.page_view._fit_mode)
-        OCRProcessManager.shutdown_all()
+        shutdown_ocr()
         super().closeEvent(event)
 
 
@@ -1685,6 +1691,15 @@ class TakoReader(QMainWindow):
 def main():
     import traceback
 
+    # ── Subprocess dispatch (frozen builds) ──────────────────────────────
+    # CUDA probe runs as the same binary with a special flag.
+    # OCR runs in-process in frozen builds, so no dispatch needed for it.
+    if "--cuda-probe" in sys.argv:
+        from ocr import cuda_probe_main
+        cuda_probe_main()
+        return
+
+    # ── Normal GUI startup ───────────────────────────────────────────────
     dlog(f"startup begin — python {sys.version}")
     dlog(f"platform: {platform.system()} {platform.release()}")
 

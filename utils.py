@@ -17,6 +17,30 @@ DEBUG = "--debug" in sys.argv
 ICON_VARIANT = "dark"
 
 
+# ─── Frozen-build helpers ────────────────────────────────────────────────────
+
+def is_frozen() -> bool:
+    """True if running inside a PyInstaller bundle."""
+    return getattr(sys, "_MEIPASS", None) is not None
+
+
+def resource_path(*parts: str) -> Path:
+    """
+    Resolve a path relative to the application root.
+
+    In development this is the directory containing this file.
+    In a PyInstaller bundle it's the temp _MEIPASS directory where
+    bundled data files are unpacked.
+    """
+    if is_frozen():
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent
+    return base.joinpath(*parts)
+
+
+# ─── Shared helpers ──────────────────────────────────────────────────────────
+
 def dlog(msg: str):
     """Print only when --debug flag is passed."""
     if DEBUG:
@@ -30,11 +54,11 @@ def _ctrl() -> str:
 
 def load_icon(name: str) -> QIcon:
     """
-    Load an icon from icons/<variant>/<name>.png next to the main script.
-    Falls back to an empty QIcon if the file is missing, so the app
-    always runs even without the icon set.
+    Load an icon from icons/<variant>/<n>.png.
+    Works both in development and inside a PyInstaller bundle.
+    Falls back to an empty QIcon if the file is missing.
     """
-    path = Path(__file__).parent / "icons" / ICON_VARIANT / f"{name}.png"
+    path = resource_path("icons", ICON_VARIANT, f"{name}.png")
     if path.exists():
         return QIcon(str(path))
     return QIcon()
