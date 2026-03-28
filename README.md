@@ -4,6 +4,8 @@ A manga reader built for Japanese immersion. Drag-select any text region for ins
 
 **Source:** [github.com/tacoccino/tako-reader](https://github.com/tacoccino/tako-reader)
 
+![Screenshot 2026-03-28 at 11 35 32 AM Large](https://github.com/user-attachments/assets/bdfa0f9f-9d24-4ba3-a09d-c168f818180c)
+
 ---
 
 ## Features
