@@ -69,7 +69,7 @@ class SettingsDialog(QDialog):
         self.app_settings = app_settings
         self._shortcut_defaults = shortcut_defaults or {}
         self.setWindowTitle("Tako Reader — Settings")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(600)
         self.setMinimumHeight(300)
         self.setModal(True)
         self._apply_style()

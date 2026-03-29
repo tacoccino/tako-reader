@@ -1236,7 +1236,7 @@ class ThumbnailList(QListWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(145)
+        self.setFixedWidth(150)
         self.setIconSize(QSize(90, 120))
         self.setSpacing(4)
         self.setStyleSheet(f"""
