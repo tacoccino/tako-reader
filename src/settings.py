@@ -419,12 +419,25 @@ class SettingsDialog(QDialog):
     def _build_ocr_section(self):
         lay = self._section("OCR")
 
+        # Device picker + refresh button on the same row
+        device_row = QHBoxLayout()
         self.ocr_device_combo = QComboBox()
-        self._populate_device_combo()
-        self._row(lay, "OCR Device", self.ocr_device_combo,
+        device_row.addWidget(self.ocr_device_combo, stretch=1)
+
+        self._device_refresh_btn = QPushButton("Refresh")
+        self._device_refresh_btn.setFixedWidth(70)
+        self._device_refresh_btn.setToolTip("Re-scan for CUDA devices")
+        self._device_refresh_btn.clicked.connect(self._refresh_cuda_devices)
+        device_row.addWidget(self._device_refresh_btn)
+
+        device_container = QWidget()
+        device_container.setLayout(device_row)
+        self._row(lay, "OCR Device", device_container,
                   hint="CPU works on all systems. CUDA requires a compatible NVIDIA GPU "
-                       "and a CUDA-enabled PyTorch build. Changes take effect on the "
-                       "next OCR call.")
+                       "and a CUDA-enabled PyTorch build. Click Refresh to scan for GPUs.")
+
+        # Populate from cache instantly — no subprocess at dialog open
+        self._populate_device_combo_from_cache()
 
         self.ocr_clear_on_file_check = QCheckBox()
         self._row(lay, "Clear on File Change", self.ocr_clear_on_file_check,
@@ -435,19 +448,59 @@ class SettingsDialog(QDialog):
                   hint="Pre-load the OCR model when Tako Reader starts so the "
                        "first OCR call is instant. Adds a few seconds to launch time.")
 
-    def _populate_device_combo(self):
+    def _populate_device_combo_from_cache(self):
+        """Populate the device combo from cached probe results (instant)."""
         self.ocr_device_combo.clear()
         self.ocr_device_combo.addItem("CPU", "cpu")
-        devices = _probe_cuda_devices()
+        cached = self.app_settings.value("ocr/cached_devices", []) or []
+        if isinstance(cached, list):
+            for dev in cached:
+                if isinstance(dev, dict) and "id" in dev and "name" in dev:
+                    self.ocr_device_combo.addItem(
+                        f"CUDA:{dev['id']}  {dev['name']}", f"cuda:{dev['id']}"
+                    )
+
+    def _refresh_cuda_devices(self):
+        """Re-probe CUDA devices in the background."""
+        self._device_refresh_btn.setEnabled(False)
+        self._device_refresh_btn.setText("Scanning…")
+
+        from PyQt6.QtCore import QThread, pyqtSignal
+
+        class _ProbeWorker(QThread):
+            finished = pyqtSignal(list)
+            def run(self_):
+                self_.finished.emit(_probe_cuda_devices())
+
+        self._probe_worker = _ProbeWorker()
+        self._probe_worker.finished.connect(self._on_cuda_probe_finished)
+        self._probe_worker.start()
+
+    def _on_cuda_probe_finished(self, devices: list):
+        """Handle CUDA probe results."""
+        self._device_refresh_btn.setEnabled(True)
+        self._device_refresh_btn.setText("Refresh")
+
+        # Cache the results
+        self.app_settings.setValue("ocr/cached_devices", devices)
+
+        # Remember current selection
+        saved = self.ocr_device_combo.currentData()
+
+        # Repopulate
+        self.ocr_device_combo.clear()
+        self.ocr_device_combo.addItem("CPU", "cpu")
         if devices:
             for dev in devices:
                 self.ocr_device_combo.addItem(
                     f"CUDA:{dev['id']}  {dev['name']}", f"cuda:{dev['id']}"
                 )
-        else:
-            self.ocr_device_combo.addItem(
-                "CUDA (unavailable — see Troubleshooting in README)", "cpu"
-            )
+
+        # Restore selection
+        for i in range(self.ocr_device_combo.count()):
+            if self.ocr_device_combo.itemData(i) == saved:
+                self.ocr_device_combo.setCurrentIndex(i)
+                break
 
     # ── Anki section ─────────────────────────────────────────────────────────
 
