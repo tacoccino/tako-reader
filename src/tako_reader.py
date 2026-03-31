@@ -31,6 +31,7 @@ from utils import load_icon, _ctrl, dlog, DEBUG, is_frozen
 import theme
 from ocr import OCRProcessManager, OCRWorker, OCRWarmupWorker, shutdown_ocr, _InProcessModel
 from loaders import load_pages_from_path
+from series import SeriesContext
 from widgets import (
     PageView, OCRPanel,
     PagePreloadWorker, BookmarkPopup, ImageAdjustPopup,
@@ -52,6 +53,8 @@ class TakoReader(QMainWindow):
         "first_page":       ("First Page",            "Home",         "Navigation"),
         "last_page":        ("Last Page",             "End",          "Navigation"),
         "jump_to_page":     ("Jump to Page",          "Ctrl+G",       "Navigation"),
+        "prev_volume":      ("Previous Volume",       "Ctrl+Left",    "Navigation"),
+        "next_volume":      ("Next Volume",           "Ctrl+Right",   "Navigation"),
         # View
         "fit_width":        ("Fit Width",             "W",            "View"),
         "fit_page":         ("Fit Page",              "F",            "View"),
@@ -98,6 +101,8 @@ class TakoReader(QMainWindow):
                                               "warmth": 0}
         self._adj_cache: dict               = {}   # (index, adj_key) → QPixmap
         self._adj_debounce                  = None  # QTimer, set up after build
+        self._series: SeriesContext | None   = None
+        self._at_volume_boundary            = False  # for two-press advance
 
         # Initialise theme engine before building UI so load_icon() uses
         # the correct icon variant (dark/light) from the very first call.
@@ -199,7 +204,7 @@ class TakoReader(QMainWindow):
         bar.setObjectName("NavBar")
         bar.setFixedHeight(34)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(42, 4, 42, 4)
+        lay.setContentsMargins(12, 4, 12, 4)
 
         def _nav_btn(label, slot, icon_name=None):
             b = QPushButton()
@@ -217,6 +222,20 @@ class TakoReader(QMainWindow):
                 b.setText(label)
             return b
 
+        # ── Volume prev ──
+        self.btn_vol_prev = _nav_btn("◀ Vol", self.prev_volume, "nav-vol-prev")
+        self.btn_vol_prev.setToolTip("Previous volume")
+        self.btn_vol_prev.hide()
+        lay.addWidget(self.btn_vol_prev)
+
+        self._vol_label = QLabel("")
+        self._vol_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vol_label.setFixedWidth(62)
+        self._vol_label.setStyleSheet("font-size: 8pt;")
+        self._vol_label.hide()
+        lay.addWidget(self._vol_label)
+
+        # ── Page navigation ──
         self.btn_first = _nav_btn("⏮", lambda: self.go_to_page(0),             "nav-first")
         self.btn_prev  = _nav_btn("◀  Prev", self.prev_page,                    "nav-prev")
         self.btn_next  = _nav_btn("Next  ▶", self.next_page,                    "nav-next")
@@ -247,6 +266,13 @@ class TakoReader(QMainWindow):
         lay.addStretch()
         lay.addWidget(self.btn_next)
         lay.addWidget(self.btn_last)
+
+        # ── Volume next ──
+        self.btn_vol_next = _nav_btn("Vol ▶", self.next_volume, "nav-vol-next")
+        self.btn_vol_next.setToolTip("Next volume")
+        self.btn_vol_next.hide()
+        lay.addWidget(self.btn_vol_next)
+
         return bar
 
     def _build_menu(self):
@@ -349,6 +375,10 @@ class TakoReader(QMainWindow):
         nav_menu.addActions([prev_a, next_a])
         jump_act = _act("jump_to_page", "Jump to Page…", self._start_page_jump)
         nav_menu.addAction(jump_act)
+        nav_menu.addSeparator()
+        prev_vol_a = _act("prev_volume", "Previous Volume", self.prev_volume)
+        next_vol_a = _act("next_volume", "Next Volume",     self.next_volume)
+        nav_menu.addActions([prev_vol_a, next_vol_a])
         nav_menu.addSeparator()
         bm_toggle = _act("toggle_bookmark", "Toggle Bookmark",  self._toggle_bookmark)
         bm_list   = _act("show_bookmarks",  "Show Bookmarks…",  self._show_bookmarks_popup)
@@ -634,6 +664,8 @@ class TakoReader(QMainWindow):
         self._current      = 0
         self._current_file = ""
         self._bookmarks    = []
+        self._series       = None
+        self._at_volume_boundary = False
         self.page_view.set_pixmap(QPixmap())
         self.thumb_list.clear()
         self.page_label.setText("— / —")
@@ -641,6 +673,7 @@ class TakoReader(QMainWindow):
         self.btn_next.setEnabled(False)
         self.btn_first.setEnabled(False)
         self.btn_last.setEnabled(False)
+        self._update_series_ui()
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
         self._set_keep_awake(False)
@@ -685,6 +718,12 @@ class TakoReader(QMainWindow):
         self._settings.setValue("last_dir", str(Path(path).parent))
 
         self.setWindowTitle(f"Tako Reader — {Path(path).name}")
+        # Enrich title with series position
+        if self._series and self._series.has_series:
+            self.setWindowTitle(
+                f"Tako Reader — {self._series.series_name} — "
+                f"{self._series.label()} — {Path(path).name}"
+            )
         if self._settings.value("general/keep_awake", True, type=bool):
             self._set_keep_awake(True)
         self._current_file = str(Path(path).resolve())
@@ -692,6 +731,15 @@ class TakoReader(QMainWindow):
         self._rotation     = self._load_rotation()
         self._adjustments  = self._load_adjustments()
         self._adj_cache.clear()
+        self._at_volume_boundary = False
+
+        # Series detection — scan sibling files for volume navigation
+        resolved = Path(path).resolve()
+        if resolved.is_file():
+            self._series = SeriesContext(resolved)
+        else:
+            self._series = None
+        self._update_series_ui()
         if self._settings.value("ocr/clear_on_file", True, type=bool):
             self.ocr_panel.clear_all()
 
@@ -861,11 +909,12 @@ class TakoReader(QMainWindow):
             return
         index = max(0, min(index, len(self._pages) - 1))
         self._current = index
+        self._at_volume_boundary = False
         self.page_view.set_pixmap(self._get_display_pixmap(index))
         self.thumb_list.select_page(index)
         self.page_label.setText(f"{index+1} / {len(self._pages)}")
-        self.btn_prev.setEnabled(index > 0)
-        self.btn_next.setEnabled(index < len(self._pages) - 1)
+        self.btn_prev.setEnabled(index > 0 or (self._series and not self._series.is_first))
+        self.btn_next.setEnabled(index < len(self._pages) - 1 or (self._series and not self._series.is_last))
         self.btn_first.setEnabled(index > 0)
         self.btn_last.setEnabled(index < len(self._pages) - 1)
         self._save_session_page(index)
@@ -875,11 +924,65 @@ class TakoReader(QMainWindow):
 
     def prev_page(self):
         step = 2 if self._page_mode == "double" else 1
-        self.go_to_page(self._current + (step if self._reading_mode == "rtl" else -step))
+        target = self._current + (step if self._reading_mode == "rtl" else -step)
+        # Check if we're trying to go before the first page
+        if target < 0:
+            if self._series and self._series.prev_path:
+                if self._at_volume_boundary:
+                    self.prev_volume()
+                    return
+                self._at_volume_boundary = True
+                self._toast("Beginning of volume — press again for previous volume")
+                return
+            return
+        self.go_to_page(target)
 
     def next_page(self):
         step = 2 if self._page_mode == "double" else 1
-        self.go_to_page(self._current + (-step if self._reading_mode == "rtl" else step))
+        target = self._current + (-step if self._reading_mode == "rtl" else step)
+        # Check if we're trying to go past the last page
+        if target >= len(self._pages):
+            if self._series and self._series.next_path:
+                if self._at_volume_boundary:
+                    self.next_volume()
+                    return
+                self._at_volume_boundary = True
+                self._toast("End of volume — press again for next volume")
+                return
+            return
+        self.go_to_page(target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Volume / series navigation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def prev_volume(self):
+        """Load the previous volume in the series."""
+        if not self._series or not self._series.prev_path:
+            return
+        path = str(self._series.prev_path)
+        self._load_path(path)
+        # Jump to last page so user can read backwards seamlessly
+        if self._pages:
+            self.go_to_page(len(self._pages) - 1)
+
+    def next_volume(self):
+        """Load the next volume in the series."""
+        if not self._series or not self._series.next_path:
+            return
+        self._load_path(str(self._series.next_path))
+
+    def _update_series_ui(self):
+        """Show or hide volume navigation based on series context."""
+        has = self._series is not None and self._series.has_series
+        self.btn_vol_prev.setVisible(has)
+        self.btn_vol_next.setVisible(has)
+        self._vol_label.setVisible(has)
+        if has:
+            self.btn_vol_prev.setEnabled(not self._series.is_first)
+            self.btn_vol_next.setEnabled(not self._series.is_last)
+            self._vol_label.setText(self._series.label())
+            self._vol_label.setToolTip(self._series.series_name)
 
     def _toggle_thumbnails(self, checked: bool | None = None):
         if checked is None:
