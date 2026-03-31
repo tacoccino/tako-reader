@@ -113,9 +113,9 @@ REM Upgrade pip
 %PYTHON% -m pip install --upgrade pip --quiet >nul 2>&1
 
 REM ── Step 3: Install core packages ──────────────────────────────────────────
-echo   [3/5] Installing core packages (PyQt6, PDF support, dictionary)...
+echo   [3/5] Installing core packages (PyQt6, PDF support, archive formats)...
 echo          This may take a minute...
-%PIP% install --quiet PyQt6 PyMuPDF Pillow numpy pykakasi
+%PIP% install --quiet PyQt6 PyMuPDF Pillow numpy pykakasi py7zr
 if %ERRORLEVEL% neq 0 (
     echo   [ERROR] Failed to install core packages.
     pause
@@ -156,5 +156,9 @@ echo   Use "Tako Reader.bat" to launch the app.
 echo.
 echo   The OCR model (~400 MB) will download
 echo   automatically on first use.
+echo.
+echo   For CBR support, install UnRAR:
+echo     https://www.rarlab.com/rar_add.htm
+echo   Extract and add UnRAR.exe to your PATH.
 echo.
 pause

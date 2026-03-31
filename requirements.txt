@@ -5,6 +5,8 @@ PyQt6>=6.6.0
 PyMuPDF>=1.23.0      # PDF support (imports as `fitz`)
 Pillow>=10.0.0       # Image processing
 numpy>=1.24.0        # Array ops for OCR image conversion
+py7zr>=0.20.0        # CB7/7z archive support
+                     # CBR support requires 'unrar' or 'unar' CLI tool — see README
 manga-ocr>=0.1.11    # Japanese OCR — downloads ~400 MB model on first use
                      # Comment out the line above if you don't need OCR
 jamdict>=0.1.0           # Offline Japanese dictionary (JMdict + KANJIDIC2)

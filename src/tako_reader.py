@@ -649,7 +649,7 @@ class TakoReader(QMainWindow):
         last_dir = self._settings.value("last_dir", "")
         path, _  = QFileDialog.getOpenFileName(
             self, "Open Manga File", last_dir,
-            "Manga Files (*.cbz *.zip *.pdf *.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"
+            "Manga Files (*.cbz *.cbr *.cb7 *.cbt *.zip *.rar *.7z *.tar *.pdf *.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"
         )
         if path:
             self._load_path(path)

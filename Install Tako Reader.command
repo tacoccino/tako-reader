@@ -79,9 +79,9 @@ PYTHON="$VENV_DIR/bin/python"
 "$PYTHON" -m pip install --upgrade pip --quiet >/dev/null 2>&1
 
 # ── Step 3: Install core packages ────────────────────────────────────────────
-echo "  [3/5] Installing core packages (PyQt6, PDF support, dictionary)..."
+echo "  [3/5] Installing core packages (PyQt6, PDF support, archive formats)..."
 echo "         This may take a minute..."
-"$PIP" install --quiet PyQt6 PyMuPDF Pillow numpy pykakasi
+"$PIP" install --quiet PyQt6 PyMuPDF Pillow numpy pykakasi py7zr
 echo "         Done."
 
 # ── Step 4: Install OCR engine ───────────────────────────────────────────────
@@ -124,5 +124,9 @@ echo "  Use 'Tako Reader.command' to launch the app."
 echo ""
 echo "  The OCR model (~400 MB) will download"
 echo "  automatically on first use."
+echo ""
+echo "  For CBR support, install an unrar tool:"
+echo "    macOS:  brew install unar"
+echo "    Linux:  sudo apt install unrar"
 echo ""
 read -p "  Press Enter to close..."
