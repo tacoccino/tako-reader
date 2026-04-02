@@ -342,6 +342,17 @@ class SettingsDialog(QDialog):
         self._row(lay, "Keep Screen Awake", self.keep_awake_check,
                   hint="Prevent the screen from sleeping while a file is open.")
 
+        # Dictionary
+        dict_lay = self._section("Dictionary")
+        self.dict_mode_combo = QComboBox()
+        self.dict_mode_combo.addItem("Offline first, then Jisho", "offline_first")
+        self.dict_mode_combo.addItem("Jisho first, then offline", "online_first")
+        self.dict_mode_combo.addItem("Offline only", "offline_only")
+        self._row(dict_lay, "Lookup Mode", self.dict_mode_combo,
+                  hint="Controls which dictionary source is tried first. "
+                       "Jisho.org provides broader coverage but requires "
+                       "an internet connection.")
+
     # ── Appearance section ────────────────────────────────────────────────────
 
     def _build_appearance_section(self):
@@ -671,6 +682,11 @@ class SettingsDialog(QDialog):
         self.preload_spin.setValue(self.app_settings.value("general/preload_count", 2, type=int))
         self.keep_awake_check.setChecked(
             self.app_settings.value("general/keep_awake", True, type=bool))
+        saved_dict_mode = self.app_settings.value("dict/mode", "offline_first")
+        for i in range(self.dict_mode_combo.count()):
+            if self.dict_mode_combo.itemData(i) == saved_dict_mode:
+                self.dict_mode_combo.setCurrentIndex(i)
+                break
 
         # OCR
         saved_device = self.app_settings.value("ocr/device", "cpu")
@@ -728,6 +744,7 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
         self.app_settings.setValue("general/preload_count", self.preload_spin.value())
         self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
+        self.app_settings.setValue("dict/mode",             self.dict_mode_combo.currentData())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
         self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())

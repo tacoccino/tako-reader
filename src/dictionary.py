@@ -1,17 +1,19 @@
 """
 Tako Reader — dictionary lookup and popup.
-Offline JMdict / KANJIDIC2 lookup via jamdict, and the floating
-popup widget that shows results with Anki integration.
+Offline JMdict / KANJIDIC2 lookup via jamdict, with Jisho API fallback.
+Floating popup widget shows results with Anki integration.
 """
 
 import webbrowser
+import json
+import urllib.request
 from urllib.parse import quote as url_quote
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QApplication,
 )
-from PyQt6.QtCore import Qt, QPoint, QSettings, QTimer
+from PyQt6.QtCore import Qt, QPoint, QSettings, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QGuiApplication
 
 from utils import _ctrl
@@ -26,7 +28,7 @@ from anki import (
 
 def lookup_word(word: str) -> list[dict]:
     """
-    Look up a word using jamdict.
+    Look up a word using jamdict (offline).
     Returns a list of entry dicts:
       {
         "word":    str,               # the surface/kanji form
@@ -86,6 +88,70 @@ def lookup_word(word: str) -> list[dict]:
         return []
 
 
+def lookup_jisho(word: str) -> list[dict]:
+    """
+    Look up a word via the Jisho.org API (online fallback).
+    Returns the same entry dict format as lookup_word().
+    """
+    try:
+        url = f"https://jisho.org/api/v1/search/words?keyword={url_quote(word)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "TakoReader/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        entries = []
+        for item in data.get("data", [])[:5]:  # limit to top 5
+            jp = item.get("japanese", [{}])
+            # Prefer exact match — check if our word appears in any form
+            word_forms = set()
+            for j in jp:
+                if j.get("word"):
+                    word_forms.add(j["word"])
+                if j.get("reading"):
+                    word_forms.add(j["reading"])
+            if word not in word_forms and len(entries) > 0:
+                continue  # skip loose matches after first result
+
+            kanji_form = jp[0].get("word", "") if jp else ""
+            reading    = jp[0].get("reading", "") if jp else ""
+            # Collect all readings
+            readings = []
+            for j in jp[:4]:
+                r = j.get("reading", "")
+                if r and r not in readings:
+                    readings.append(r)
+
+            senses = []
+            for sense in item.get("senses", [])[:6]:
+                defs = sense.get("english_definitions", [])
+                if defs:
+                    senses.append("; ".join(defs))
+
+            entries.append({
+                "word":     kanji_form or word,
+                "readings": readings,
+                "senses":   senses,
+                "kanji":    [],  # Jisho API doesn't return kanji breakdown
+                "source":   "jisho",
+            })
+        return entries
+    except Exception:
+        return []
+
+
+class _JishoWorker(QThread):
+    """Runs Jisho API lookup on a background thread."""
+    finished = pyqtSignal(str, list)  # (word, entries)
+
+    def __init__(self, word: str):
+        super().__init__()
+        self.word = word
+
+    def run(self):
+        entries = lookup_jisho(self.word)
+        self.finished.emit(self.word, entries)
+
+
 # ─── Dictionary popup ───────────────────────────────────────────────────────
 
 class DictPopup(QWidget):
@@ -99,9 +165,10 @@ class DictPopup(QWidget):
         self.app_settings  = app_settings
         self.main_window   = main_window
         self._current_sentence = ""
+        self._current_word     = ""
         self._add_workers: set = set()
-        self._connect_worker = None
-        self._fields_worker  = None
+        self._jisho_worker     = None
+
         self.setMinimumWidth(320)
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
@@ -129,6 +196,8 @@ class DictPopup(QWidget):
     def show_word(self, word: str, global_pos: QPoint, sentence: str = ""):
         """Look up word, populate content, and show near global_pos."""
         self._current_sentence = sentence
+        self._current_word     = word
+        self._global_pos       = global_pos
         self._populate(word)
         self._reposition(global_pos)
         self.show()
@@ -143,18 +212,89 @@ class DictPopup(QWidget):
 
     def _populate(self, word: str):
         self._clear()
-        entries = lookup_word(word)
 
-        if not entries:
-            self._add_label(f"No results for <b>{word}</b>", size=10)
+        mode = self.app_settings.value("dict/mode", "offline_first")
+
+        if mode == "online_first":
+            # Show searching state, fire Jisho immediately
+            self._add_label(f"Searching for <b>{word}</b>…", size=10,
+                            colour=theme._active['text_muted'])
+            self._add_anki_btn_standalone(word)
             self._add_buttons(word)
             self._lay.addStretch()
             self._resize_to_content()
+            self._jisho_worker = _JishoWorker(word)
+            self._jisho_worker.finished.connect(self._on_jisho_result)
+            self._jisho_worker.start()
+
+        elif mode == "offline_only":
+            entries = lookup_word(word)
+            if entries:
+                self._build_entries(entries)
+            else:
+                self._add_label(f"No results for <b>{word}</b>", size=10)
+                self._add_anki_btn_standalone(word)
+                self._add_buttons(word)
+                self._lay.addStretch()
+                self._resize_to_content()
+
+        else:  # offline_first (default)
+            entries = lookup_word(word)
+            if entries:
+                self._build_entries(entries)
+            else:
+                # No offline results — try Jisho
+                self._add_label(f"Searching for <b>{word}</b>…", size=10,
+                                colour=theme._active['text_muted'])
+                self._add_anki_btn_standalone(word)
+                self._add_buttons(word)
+                self._lay.addStretch()
+                self._resize_to_content()
+                self._jisho_worker = _JishoWorker(word)
+                self._jisho_worker.finished.connect(self._on_jisho_result)
+                self._jisho_worker.start()
+
+    def _on_jisho_result(self, word: str, entries: list):
+        """Handle Jisho API results arriving after the popup is shown."""
+        if word != self._current_word:
             return
+        if not self.isVisible():
+            return
+
+        mode = self.app_settings.value("dict/mode", "offline_first")
+
+        self._clear()
+        if entries:
+            self._build_entries(entries, source_label="jisho.org")
+        elif mode == "online_first":
+            # Jisho had nothing — try offline as fallback
+            offline = lookup_word(word)
+            if offline:
+                self._build_entries(offline)
+            else:
+                self._add_label(f"No results for <b>{word}</b>", size=10)
+                self._add_anki_btn_standalone(word)
+                self._add_buttons(word)
+                self._lay.addStretch()
+                self._resize_to_content()
+        else:
+            # offline_first mode, Jisho also had nothing
+            self._add_label(f"No results for <b>{word}</b>", size=10)
+            self._add_anki_btn_standalone(word)
+            self._add_buttons(word)
+            self._lay.addStretch()
+            self._resize_to_content()
+
+        # Deferred resize — lets the layout fully process new widgets
+        QTimer.singleShot(0, self._resize_to_content)
+
+    def _build_entries(self, entries: list, source_label: str = ""):
+        """Build the full popup content from a list of entry dicts."""
+        word = entries[0]["word"] if entries else self._current_word
 
         anki_btn_style = f"""
             QPushButton {{
-                background: #4a3080; color: {theme._active['text_secondary']};
+                background: #4a3080; color: #ddd;
                 border: 1px solid #6a50a0; border-radius: 4px;
                 font-size: 8pt; padding: 2px 8px;
             }}
@@ -207,7 +347,7 @@ class DictPopup(QWidget):
                 for j, sense in enumerate(entry["senses"][:6]):
                     self._add_label(f"{j+1}.  {sense}", size=9, indent=True)
 
-            if entry["kanji"]:
+            if entry.get("kanji"):
                 self._add_label("Kanji", size=8, colour="#666", bold=True)
                 for kinfo in entry["kanji"]:
                     kw = QWidget()
@@ -241,9 +381,40 @@ class DictPopup(QWidget):
                     kl.addLayout(readings_row)
                     self._lay.addWidget(kw)
 
-        self._add_buttons(entries[0]["word"])
+        # Source indicator for online results
+        if source_label:
+            src_lbl = QLabel(f"Results from {source_label}")
+            src_lbl.setStyleSheet(
+                f"color: {theme._active['text_muted']}; font-size: 7pt;"
+                " font-style: italic; background: transparent; border: none;"
+            )
+            self._lay.addWidget(src_lbl)
+
+        self._add_buttons(word)
         self._lay.addStretch()
         self._resize_to_content()
+
+    def _add_anki_btn_standalone(self, word: str):
+        """Add a standalone +Anki button (used when no definitions found)."""
+        anki_btn_style = f"""
+            QPushButton {{
+                background: #4a3080; color: #ddd;
+                border: 1px solid #6a50a0; border-radius: 4px;
+                font-size: 9pt; padding: 4px 14px;
+            }}
+            QPushButton:hover {{ background: #6a50c0; color: #fff; }}
+        """
+        row = QHBoxLayout()
+        btn = QPushButton("+ Add to Anki")
+        btn.setStyleSheet(anki_btn_style)
+        btn.setToolTip("Open card editor to add this word manually")
+        btn.clicked.connect(lambda: self._open_anki_edit_dialog(word, "", ""))
+        row.addWidget(btn)
+        row.addStretch()
+        container = QWidget()
+        container.setStyleSheet("background: transparent; border: none;")
+        container.setLayout(row)
+        self._lay.addWidget(container)
 
     def _add_label(self, text: str, size: int = 10, colour: str = "#ccc",
                    bold: bool = False, indent: bool = False):
@@ -395,8 +566,13 @@ class DictPopup(QWidget):
         QTimer.singleShot(duration_ms, toast.deleteLater)
 
     def _resize_to_content(self):
+        # Force layout to recalculate before measuring
         self._content.adjustSize()
-        h = min(self._content.sizeHint().height() + 4, self.maximumHeight())
+        QApplication.processEvents()
+        self._content.updateGeometry()
+        hint_h = self._content.sizeHint().height()
+        # Ensure minimum usable height (at least 120px)
+        h = max(120, min(hint_h + 4, self.maximumHeight()))
         self.resize(self.width(), h)
 
     def _reposition(self, global_pos: QPoint):
