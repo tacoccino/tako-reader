@@ -342,6 +342,15 @@ class SettingsDialog(QDialog):
         self._row(lay, "Keep Screen Awake", self.keep_awake_check,
                   hint="Prevent the screen from sleeping while a file is open.")
 
+        # Reading
+        read_lay = self._section("Reading")
+        self.auto_spread_check = QCheckBox()
+        self._row(read_lay, "Auto-detect Spreads", self.auto_spread_check,
+                  hint="In double-page mode, automatically display landscape "
+                       "(wide) pages as solo spreads. This keeps page pairing "
+                       "correct when a volume contains cover pages or "
+                       "two-page spreads scanned as single images.")
+
         # Dictionary
         dict_lay = self._section("Dictionary")
         self.dict_mode_combo = QComboBox()
@@ -682,6 +691,8 @@ class SettingsDialog(QDialog):
         self.preload_spin.setValue(self.app_settings.value("general/preload_count", 2, type=int))
         self.keep_awake_check.setChecked(
             self.app_settings.value("general/keep_awake", True, type=bool))
+        self.auto_spread_check.setChecked(
+            self.app_settings.value("view/auto_spread", True, type=bool))
         saved_dict_mode = self.app_settings.value("dict/mode", "offline_first")
         for i in range(self.dict_mode_combo.count()):
             if self.dict_mode_combo.itemData(i) == saved_dict_mode:
@@ -744,6 +755,7 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
         self.app_settings.setValue("general/preload_count", self.preload_spin.value())
         self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
+        self.app_settings.setValue("view/auto_spread",      self.auto_spread_check.isChecked())
         self.app_settings.setValue("dict/mode",             self.dict_mode_combo.currentData())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())

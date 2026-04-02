@@ -173,7 +173,7 @@ class DictPopup(QWidget):
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(theme.POPUP_STYLESHEET)
+        self.setStyleSheet(theme.POPUP_STYLESHEET + "\n" + theme.TOOLTIP_STYLESHEET)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -340,15 +340,15 @@ class DictPopup(QWidget):
             self._lay.addWidget(header_container)
 
             if reading_str:
-                self._add_label(reading_str, size=12, colour="#93b4d4")
+                self._add_label(reading_str, size=12, colour=theme.ACCENT)
 
             if entry["senses"]:
-                self._add_label("Definitions", size=8, colour="#666", bold=True)
+                self._add_label("Definitions", size=8, colour=theme._active['text_muted'], bold=True)
                 for j, sense in enumerate(entry["senses"][:6]):
                     self._add_label(f"{j+1}.  {sense}", size=9, indent=True)
 
             if entry.get("kanji"):
-                self._add_label("Kanji", size=8, colour="#666", bold=True)
+                self._add_label("Kanji", size=8, colour=theme._active['text_muted'], bold=True)
                 for kinfo in entry["kanji"]:
                     kw = QWidget()
                     kw.setStyleSheet(f"background: {theme._active['card_bg']}; border-radius: 6px; border: none;")
@@ -416,8 +416,10 @@ class DictPopup(QWidget):
         container.setLayout(row)
         self._lay.addWidget(container)
 
-    def _add_label(self, text: str, size: int = 10, colour: str = "#ccc",
+    def _add_label(self, text: str, size: int = 10, colour: str = "",
                    bold: bool = False, indent: bool = False):
+        if not colour:
+            colour = theme._active['text_secondary']
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setStyleSheet(

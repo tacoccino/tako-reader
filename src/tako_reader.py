@@ -66,6 +66,7 @@ class TakoReader(QMainWindow):
         "reset_rotation":   ("Reset Rotation",        "",             "View"),
         "single_page":      ("Single Page",           "",             "View"),
         "double_page":      ("Double Page",           "",             "View"),
+        "page_offset":      ("Toggle Page Offset",    "Shift+O",      "View"),
         "toggle_warmth":    ("Toggle Warmth",         "",             "View"),
         "toggle_thumbnails":("Toggle Thumbnails",     "Ctrl+Shift+T", "View"),
         "toggle_ocr_panel": ("Toggle OCR Panel",      "Ctrl+Shift+P", "View"),
@@ -95,6 +96,8 @@ class TakoReader(QMainWindow):
         self._actions: dict                = {}  # action_id → QAction
         self._current_file                 = ""
         self._page_mode                    = "single"  # "single" | "double"
+        self._page_offset                  = 0          # 0 or 1; 1 = first page solo
+        self._spreads: list[tuple[int,...]] = []         # precomputed page pairings
         self._rotation                     = 0          # 0, 90, 180, 270
         self._adjustments                  = {"brightness": 100, "contrast": 100,
                                               "saturation": 100, "sharpness": 100,
@@ -352,6 +355,10 @@ class TakoReader(QMainWindow):
         self._menu_single_act = single_act
         self._menu_double_act = double_act
         view_menu.addActions([single_act, double_act])
+        offset_act = _act("page_offset", "Toggle Page Offset",
+                          self._toggle_page_offset, checkable=True)
+        self._menu_offset_act = offset_act
+        view_menu.addAction(offset_act)
         view_menu.addSeparator()
         view_menu.addActions([self.act_thumbnails, self.act_ocr_panel])
         view_menu.addSeparator()
@@ -491,6 +498,15 @@ class TakoReader(QMainWindow):
             )
         )
         lay.addWidget(self._page_mode_btn)
+
+        # Page offset toggle (only visible in double-page mode)
+        self._offset_btn = _btn("⇄", self._toggle_page_offset,
+                                icon_name="page-offset",
+                                tooltip="Shift page pairing — first page solo (Shift+O)")
+        self._offset_btn.setCheckable(True)
+        self._offset_btn.setVisible(False)
+        lay.addWidget(self._offset_btn)
+
         lay.addWidget(_sep())
         
         # Background colour swatch
@@ -665,6 +681,8 @@ class TakoReader(QMainWindow):
         self._current_file = ""
         self._bookmarks    = []
         self._series       = None
+        self._page_offset  = 0
+        self._spreads      = []
         self._at_volume_boundary = False
         self.page_view.set_pixmap(QPixmap())
         self.thumb_list.clear()
@@ -674,6 +692,11 @@ class TakoReader(QMainWindow):
         self.btn_first.setEnabled(False)
         self.btn_last.setEnabled(False)
         self._update_series_ui()
+        if hasattr(self, "_offset_btn"):
+            self._offset_btn.setChecked(False)
+            self._offset_btn.setVisible(False)
+        if hasattr(self, "_menu_offset_act"):
+            self._menu_offset_act.setChecked(False)
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
         self._set_keep_awake(False)
@@ -730,8 +753,15 @@ class TakoReader(QMainWindow):
         self._bookmarks    = self._load_bookmarks()
         self._rotation     = self._load_rotation()
         self._adjustments  = self._load_adjustments()
+        self._page_offset  = self._load_page_offset()
         self._adj_cache.clear()
         self._at_volume_boundary = False
+        self._compute_spreads()
+
+        # Sync offset button state
+        if hasattr(self, "_offset_btn"):
+            self._offset_btn.setChecked(self._page_offset == 1)
+            self._offset_btn.setVisible(self._page_mode == "double")
 
         # Series detection — scan sibling files for volume navigation
         resolved = Path(path).resolve()
@@ -865,18 +895,96 @@ class TakoReader(QMainWindow):
         transform = QTransform().rotate(self._rotation)
         return px.transformed(transform, Qt.TransformationMode.SmoothTransformation)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Double-page spread computation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _compute_spreads(self):
+        """Build the list of page spreads for double-page mode.
+        Each spread is a tuple of 1 or 2 page indices.
+        Solo pages: cover with offset, wide (landscape) pages, last odd page.
+        """
+        if not self._pages or self._page_mode != "double":
+            self._spreads = [(i,) for i in range(len(self._pages))]
+            return
+
+        auto_wide = self._settings.value("view/auto_spread", True, type=bool)
+        spreads = []
+        i = 0
+        n = len(self._pages)
+
+        while i < n:
+            # First page is solo when offset is on
+            if i == 0 and self._page_offset == 1:
+                spreads.append((i,))
+                i += 1
+                continue
+
+            # Wide page (width >= height) → always solo
+            if auto_wide:
+                px = self._pages[i]
+                if px.width() >= px.height():
+                    spreads.append((i,))
+                    i += 1
+                    continue
+
+            # Last page with no partner → solo
+            if i + 1 >= n:
+                spreads.append((i,))
+                i += 1
+                continue
+
+            # Check if next page is wide → current becomes solo
+            if auto_wide and i + 1 < n:
+                px_next = self._pages[i + 1]
+                if px_next.width() >= px_next.height():
+                    spreads.append((i,))
+                    i += 1
+                    continue
+
+            # Normal pair
+            spreads.append((i, i + 1))
+            i += 2
+
+        self._spreads = spreads
+
+    def _spread_for_page(self, page_idx: int) -> tuple[int, ...]:
+        """Return the spread tuple containing page_idx."""
+        for spread in self._spreads:
+            if page_idx in spread:
+                return spread
+        # Fallback: solo
+        return (page_idx,)
+
+    def _spread_index(self, page_idx: int) -> int:
+        """Return the index into _spreads that contains page_idx."""
+        for si, spread in enumerate(self._spreads):
+            if page_idx in spread:
+                return si
+        return 0
+
     def _get_display_pixmap(self, index: int) -> QPixmap:
         """Return a single or side-by-side double-page pixmap, rotated and adjusted."""
-        # Apply adjustments at source resolution (before stitching/scaling)
         px1 = self._apply_adjustments(self._pages[index])
-        if self._page_mode != "double" or index + 1 >= len(self._pages):
+
+        if self._page_mode != "double":
             return self._rotate_pixmap(px1)
-        px2 = self._apply_adjustments(self._pages[index + 1])
-        # Stitch: in RTL mode page order is right-to-left
-        left, right = (px2, px1) if self._reading_mode == "rtl" else (px1, px2)
+
+        # Use precomputed spread to decide what to show
+        spread = self._spread_for_page(index)
+        if len(spread) == 1:
+            # Solo page (cover, wide, or last odd)
+            return self._rotate_pixmap(px1)
+
+        # Double spread — render both pages
+        idx_a, idx_b = spread
+        pxa = self._apply_adjustments(self._pages[idx_a])
+        pxb = self._apply_adjustments(self._pages[idx_b])
+        # In RTL mode page order is right-to-left
+        left, right = (pxb, pxa) if self._reading_mode == "rtl" else (pxa, pxb)
         h = max(left.height(), right.height())
         combined = QPixmap(left.width() + right.width(), h)
-        combined.setDevicePixelRatio(px1.devicePixelRatio())
+        combined.setDevicePixelRatio(pxa.devicePixelRatio())
         combined.fill(Qt.GlobalColor.transparent)
         painter = QPainter(combined)
         painter.drawPixmap(0,            (h - left.height())  // 2, left)
@@ -908,11 +1016,23 @@ class TakoReader(QMainWindow):
         if not self._pages:
             return
         index = max(0, min(index, len(self._pages) - 1))
+        # In double mode, snap to the first page of the containing spread
+        if self._page_mode == "double" and self._spreads:
+            spread = self._spread_for_page(index)
+            index = spread[0]
         self._current = index
         self._at_volume_boundary = False
         self.page_view.set_pixmap(self._get_display_pixmap(index))
         self.thumb_list.select_page(index)
-        self.page_label.setText(f"{index+1} / {len(self._pages)}")
+        # Page label: show spread range in double mode
+        if self._page_mode == "double" and self._spreads:
+            spread = self._spread_for_page(index)
+            if len(spread) == 2:
+                self.page_label.setText(f"{spread[0]+1}-{spread[1]+1} / {len(self._pages)}")
+            else:
+                self.page_label.setText(f"{index+1} / {len(self._pages)}")
+        else:
+            self.page_label.setText(f"{index+1} / {len(self._pages)}")
         self.btn_prev.setEnabled(index > 0 or bool(self._series and not self._series.is_first))
         self.btn_next.setEnabled(index < len(self._pages) - 1 or bool(self._series and not self._series.is_last))
         self.btn_first.setEnabled(index > 0)
@@ -923,9 +1043,18 @@ class TakoReader(QMainWindow):
         self._preload_pages(index)
 
     def prev_page(self):
-        step = 2 if self._page_mode == "double" else 1
-        target = self._current + (step if self._reading_mode == "rtl" else -step)
-        # Check if we're trying to go before the first page
+        if self._page_mode == "double" and self._spreads:
+            si = self._spread_index(self._current)
+            # RTL reverses direction: "prev" goes forward in page index
+            target_si = si + 1 if self._reading_mode == "rtl" else si - 1
+            if 0 <= target_si < len(self._spreads):
+                self.go_to_page(self._spreads[target_si][0])
+                return
+            # At boundary
+            target = -1 if self._reading_mode != "rtl" else len(self._pages)
+        else:
+            target = self._current + (1 if self._reading_mode == "rtl" else -1)
+
         if target < 0:
             if self._series and self._series.prev_path:
                 if self._at_volume_boundary:
@@ -935,12 +1064,6 @@ class TakoReader(QMainWindow):
                 self._toast("Beginning of volume — press again for previous volume")
                 return
             return
-        self.go_to_page(target)
-
-    def next_page(self):
-        step = 2 if self._page_mode == "double" else 1
-        target = self._current + (-step if self._reading_mode == "rtl" else step)
-        # Check if we're trying to go past the last page
         if target >= len(self._pages):
             if self._series and self._series.next_path:
                 if self._at_volume_boundary:
@@ -948,6 +1071,39 @@ class TakoReader(QMainWindow):
                     return
                 self._at_volume_boundary = True
                 self._toast("End of volume — press again for next volume")
+                return
+            return
+        self.go_to_page(target)
+
+    def next_page(self):
+        if self._page_mode == "double" and self._spreads:
+            si = self._spread_index(self._current)
+            # RTL reverses direction: "next" goes backward in page index
+            target_si = si - 1 if self._reading_mode == "rtl" else si + 1
+            if 0 <= target_si < len(self._spreads):
+                self.go_to_page(self._spreads[target_si][0])
+                return
+            # At boundary
+            target = len(self._pages) if self._reading_mode != "rtl" else -1
+        else:
+            target = self._current + (-1 if self._reading_mode == "rtl" else 1)
+
+        if target >= len(self._pages):
+            if self._series and self._series.next_path:
+                if self._at_volume_boundary:
+                    self.next_volume()
+                    return
+                self._at_volume_boundary = True
+                self._toast("End of volume — press again for next volume")
+                return
+            return
+        if target < 0:
+            if self._series and self._series.prev_path:
+                if self._at_volume_boundary:
+                    self.prev_volume()
+                    return
+                self._at_volume_boundary = True
+                self._toast("Beginning of volume — press again for previous volume")
                 return
             return
         self.go_to_page(target)
@@ -1012,6 +1168,7 @@ class TakoReader(QMainWindow):
 
     def _set_page_mode(self, mode: str):
         self._page_mode = mode
+        self._compute_spreads()
         if self._pages:
             self.go_to_page(self._current)
         self._toast(f"Page mode: {mode.capitalize()}", 2000)
@@ -1020,10 +1177,30 @@ class TakoReader(QMainWindow):
             self._page_mode_btn.setText(
                 "Double Page" if mode == "double" else "Single Page"
             )
+        # Show/hide offset toggle — only relevant in double mode
+        if hasattr(self, "_offset_btn"):
+            self._offset_btn.setVisible(mode == "double")
         # Sync menu actions
         if hasattr(self, "_menu_single_act"):
             self._menu_single_act.setChecked(mode == "single")
             self._menu_double_act.setChecked(mode == "double")
+
+    def _toggle_page_offset(self):
+        """Toggle whether the first page displays solo (shifting all pairings by 1)."""
+        self._page_offset = 0 if self._page_offset else 1
+        self._save_page_offset()
+        self._compute_spreads()
+        if hasattr(self, "_offset_btn"):
+            self._offset_btn.setChecked(self._page_offset == 1)
+        if hasattr(self, "_menu_offset_act"):
+            self._menu_offset_act.setChecked(self._page_offset == 1)
+        if self._pages:
+            self.go_to_page(self._current)
+        self._toast(
+            "Page offset: ON (first page solo)" if self._page_offset
+            else "Page offset: OFF",
+            2000
+        )
 
     def _start_page_jump(self):
         """Switch page label to edit mode."""
@@ -1267,6 +1444,20 @@ class TakoReader(QMainWindow):
     def _save_rotation(self):
         if self._current_file:
             self._settings.setValue(self._rot_key(), self._rotation)
+
+    def _offset_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"page_offset/{h}"
+
+    def _load_page_offset(self) -> int:
+        if not self._current_file:
+            return 0
+        return self._settings.value(self._offset_key(), 0, type=int)
+
+    def _save_page_offset(self):
+        if self._current_file:
+            self._settings.setValue(self._offset_key(), self._page_offset)
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
