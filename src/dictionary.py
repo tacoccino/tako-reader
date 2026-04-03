@@ -18,6 +18,7 @@ from PyQt6.QtGui import QFont, QGuiApplication
 
 from utils import _ctrl
 import theme
+from audio import AudioFetchWorker, AudioPlayer, fetch_audio
 from anki import (
     make_furigana_html, anki_store_media,
     AnkiAddWorker, AnkiEditDialog,
@@ -168,6 +169,8 @@ class DictPopup(QWidget):
         self._current_word     = ""
         self._add_workers: set = set()
         self._jisho_worker     = None
+        self._audio_worker     = None
+        self._audio_cache: dict[str, bytes] = {}  # word → mp3 bytes
 
         self.setMinimumWidth(320)
         self.setMaximumWidth(400)
@@ -340,7 +343,35 @@ class DictPopup(QWidget):
             self._lay.addWidget(header_container)
 
             if reading_str:
-                self._add_label(reading_str, size=12, colour=theme.ACCENT)
+                reading_row = QHBoxLayout()
+                reading_row.setSpacing(6)
+                reading_lbl = QLabel(reading_str)
+                reading_lbl.setStyleSheet(
+                    f"color: {theme.ACCENT}; font-size: 12pt;"
+                    " background: transparent; border: none;"
+                )
+                reading_row.addWidget(reading_lbl)
+
+                # Speaker button for audio playback
+                audio_btn = QPushButton("🔊")
+                audio_btn.setFixedSize(26, 22)
+                audio_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent; border: 1px solid {theme._active['border']};
+                        border-radius: 4px; font-size: 9pt; padding: 0;
+                    }}
+                    QPushButton:hover {{ background: {theme._active['hover_bg']}; }}
+                """)
+                audio_btn.setToolTip("Play pronunciation")
+                _w = entry["word"]
+                audio_btn.clicked.connect(lambda _, w=_w: self._play_audio(w))
+                reading_row.addWidget(audio_btn)
+                reading_row.addStretch()
+
+                reading_container = QWidget()
+                reading_container.setStyleSheet("background: transparent; border: none;")
+                reading_container.setLayout(reading_row)
+                self._lay.addWidget(reading_container)
 
             if entry["senses"]:
                 self._add_label("Definitions", size=8, colour=theme._active['text_muted'], bold=True)
@@ -452,6 +483,28 @@ class DictPopup(QWidget):
         container.setLayout(row)
         self._lay.addWidget(container)
 
+    # ── Audio playback ────────────────────────────────────────────────────────
+
+    def _play_audio(self, word: str):
+        """Play pronunciation for a word. Uses cache if available."""
+        if word in self._audio_cache:
+            AudioPlayer.get().play_bytes(self._audio_cache[word])
+            return
+        # Fetch in background
+        self._audio_worker = AudioFetchWorker(word, self.app_settings)
+        self._audio_worker.finished.connect(self._on_audio_fetched)
+        self._audio_worker.failed.connect(self._on_audio_failed)
+        self._audio_worker.start()
+
+    def _on_audio_fetched(self, word: str, data: bytes):
+        """Cache and play audio once fetched."""
+        self._audio_cache[word] = data
+        AudioPlayer.get().play_bytes(data)
+
+    def _on_audio_failed(self, word: str, error: str):
+        """Show a toast if audio fetch fails."""
+        self._show_toast("🔇 No pronunciation available")
+
     def _handle_anki_click(self, word: str, reading: str,
                            definition: str, btn: QPushButton):
         modifiers = QApplication.keyboardModifiers()
@@ -509,6 +562,7 @@ class DictPopup(QWidget):
             "Definition": definition,
             "Sentence":   sentence_override if sentence_override is not None else self._current_sentence,
             "Image":      image_override or "",
+            "Audio":      "__audio__",  # sentinel — handled specially below
         }
         fields = {}
         s.beginGroup("anki/field")
@@ -524,6 +578,20 @@ class DictPopup(QWidget):
                     try:
                         anki_store_media(url, key, image_filename, b64)
                         fields[field_name] = f'<img src="{image_filename}">'
+                    except Exception:
+                        pass
+            elif source == "Audio":
+                # Fetch audio (from cache or network) and upload to Anki
+                audio_data = self._audio_cache.get(word)
+                if not audio_data:
+                    audio_data = fetch_audio(word, self.app_settings)
+                if audio_data:
+                    import time, base64
+                    audio_filename = f"tako_{word}_{int(time.time()*1000)}.mp3"
+                    try:
+                        b64_audio = base64.b64encode(audio_data).decode()
+                        anki_store_media(url, key, audio_filename, b64_audio)
+                        fields[field_name] = f"[sound:{audio_filename}]"
                     except Exception:
                         pass
             else:

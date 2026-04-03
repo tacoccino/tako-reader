@@ -362,6 +362,15 @@ class SettingsDialog(QDialog):
                        "Jisho.org provides broader coverage but requires "
                        "an internet connection.")
 
+        self.forvo_key = QLineEdit()
+        self.forvo_key.setPlaceholderText("Leave blank to use Google TTS only")
+        self.forvo_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._row(dict_lay, "Forvo API Key", self.forvo_key,
+                  hint="Optional. Provides native speaker pronunciations. "
+                       "Get a free key at https://api.forvo.com. "
+                       "Falls back to Google Translate TTS if blank or if "
+                       "Forvo has no recording for a word.")
+
     # ── Appearance section ────────────────────────────────────────────────────
 
     def _build_appearance_section(self):
@@ -647,7 +656,7 @@ class SettingsDialog(QDialog):
             "Fields set to '\u2014 skip \u2014' will be left blank."
         )
 
-        SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence", "Image"]
+        SOURCES = ["— skip —", "Word", "Reading", "Furigana", "Definition", "Sentence", "Image", "Audio"]
 
         for field in fields:
             row = QHBoxLayout()
@@ -698,6 +707,7 @@ class SettingsDialog(QDialog):
             if self.dict_mode_combo.itemData(i) == saved_dict_mode:
                 self.dict_mode_combo.setCurrentIndex(i)
                 break
+        self.forvo_key.setText(self.app_settings.value("dict/forvo_key", ""))
 
         # OCR
         saved_device = self.app_settings.value("ocr/device", "cpu")
@@ -757,6 +767,7 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
         self.app_settings.setValue("view/auto_spread",      self.auto_spread_check.isChecked())
         self.app_settings.setValue("dict/mode",             self.dict_mode_combo.currentData())
+        self.app_settings.setValue("dict/forvo_key",        self.forvo_key.text().strip())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
         self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())
