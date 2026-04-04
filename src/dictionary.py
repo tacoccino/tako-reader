@@ -302,6 +302,10 @@ class DictPopup(QWidget):
                 font-size: 8pt; padding: 2px 8px;
             }}
             QPushButton:hover {{ background: #6a50c0; color: #fff; }}
+            QToolTip {{ 
+                background-color: {theme._active['popup_bg']}; color: {theme._active['text']}; 
+                border: black solid 1px; border-radius: 4px;
+            }}
         """
 
         for i, entry in enumerate(entries):
@@ -324,6 +328,7 @@ class DictPopup(QWidget):
             anki_btn = QPushButton("+ Anki")
             anki_btn.setStyleSheet(anki_btn_style)
             anki_btn.setToolTip(f"+ Anki  |  {_ctrl()}+click to edit before adding")
+            # anki_btn.setToolTipDuration()
             _word    = entry["word"]
             _reading = reading_str
             _senses  = entry["senses"]
