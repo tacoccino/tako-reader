@@ -1336,11 +1336,7 @@ class ThumbnailList(QListWidget):
         self.setFixedWidth(150)
         self.setIconSize(QSize(90, 120))
         self.setSpacing(4)
-        self.setStyleSheet(f"""
-            QListWidget {{ background: {theme._active['panel_bg']}; border: none; }}
-            QListWidget::item {{ border-radius: 4px; }}
-            QListWidget::item:selected {{ background: {theme.ACCENT}; }}
-        """)
+        self.setStyleSheet(theme.THUMBNAIL_SCROLLBAR_STYLESHEET)
         self.itemClicked.connect(lambda item: self.page_selected.emit(self.row(item)))
 
     def load_pages(self, pixmaps: list[QPixmap]):
@@ -1352,5 +1348,8 @@ class ThumbnailList(QListWidget):
 
     def select_page(self, index: int):
         self.setCurrentRow(index)
+
+    def refresh_theme(self):
+        self.setStyleSheet(theme.THUMBNAIL_SCROLLBAR_STYLESHEET)
 
 

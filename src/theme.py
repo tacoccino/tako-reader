@@ -17,14 +17,14 @@ THEMES: dict[str, dict] = {
     "dark": {
         "name":       "Dark",
         "icon_variant": "dark",
-        "window_bg":  "#1a1a1a",
-        "toolbar_bg": "#1e1e1e",
-        "panel_bg":   "#121212",
-        "card_bg":    "#1e1e2e",
+        "window_bg":  "#282828",
+        "toolbar_bg": "#313131",
+        "panel_bg":   "#282828",
+        "card_bg":    "#252537",
         "input_bg":   "#2a2a2a",
-        "nav_bg":     "#141414",
+        "nav_bg":     "#262626",
         "popup_bg":   "#252535",
-        "menu_bg":    "#252525",
+        "menu_bg":    "#313131",
         "hover_bg":   "#2e2e2e",
         "border":     "#2a2a2a",
         "border_light": "#313244",
@@ -39,8 +39,8 @@ THEMES: dict[str, dict] = {
         "ocr_word":   "#93b4d4",
         "ocr_word_hover_fg": "#1e1e2e",
         "ocr_word_hover_bg": "#93b4d4",
-        "separator":  "#333",
-        "separator_bg": "#1e1e1e",
+        "separator":  "#404040",
+        "separator_bg": "#313131",
     },
     "light": {
         "name":       "Light",
@@ -177,6 +177,7 @@ APP_STYLESHEET = ""
 TOOLTIP_STYLESHEET = ""
 POPUP_STYLESHEET = ""
 SETTINGS_STYLESHEET = ""
+THUMBNAIL_SCROLLBAR_STYLESHEET = ""
 
 
 def _t(key: str) -> str:
@@ -187,7 +188,7 @@ def _t(key: str) -> str:
 def _rebuild_styles():
     """Rebuild all module-level stylesheet strings from active theme + accent."""
     global CARD_STYLE, BTN_SUBTLE, APP_STYLESHEET, TOOLTIP_STYLESHEET
-    global POPUP_STYLESHEET, SETTINGS_STYLESHEET
+    global POPUP_STYLESHEET, SETTINGS_STYLESHEET, THUMBNAIL_SCROLLBAR_STYLESHEET
     a = ACCENT
 
     CARD_STYLE = f"""
@@ -294,6 +295,18 @@ def _rebuild_styles():
             border: 1px solid {_t('popup_border')}; border-radius: 4px;
             padding: 2px 6px; font-size: 9pt;
         }}
+    """
+
+    THUMBNAIL_SCROLLBAR_STYLESHEET = f"""
+        QListWidget {{ background: {_t('panel_bg')}; border: none; }}
+        QListWidget::item {{ border-radius: 4px; }}
+        QScrollBar:vertical {{ 
+            background: {_t('panel_bg')}; 
+            width: 10px; margin: 0px; 
+            border: none; padding: 1px; 
+        }}
+        QScrollBar::handle:vertical {{ border-radius: 4px; min-height: 20px; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
     """
 
     SETTINGS_STYLESHEET = f"""

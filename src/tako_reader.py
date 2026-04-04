@@ -1811,11 +1811,7 @@ class TakoReader(QMainWindow):
         # Cascade to child widgets
         self.ocr_panel.refresh_theme()
         self._adj_popup.refresh_theme()
-        self.thumb_list.setStyleSheet(f"""
-            QListWidget {{ background: {theme._active['panel_bg']}; border: none; }}
-            QListWidget::item {{ border-radius: 4px; }}
-            QListWidget::item:selected {{ background: {theme.ACCENT}; }}
-        """)
+        self.thumb_list.refresh_theme()
         # Rebuild toolbar icons for the new variant
         self._rebuild_toolbar_icons()
 
