@@ -276,9 +276,17 @@ class OCRCard(QWidget):
         btn_lay.setSpacing(2)
         btn_lay.addStretch()
 
+        ocr_act_btn_style = f"""
+            QToolTip {{ 
+                background-color: {theme._active['popup_bg']}; color: {theme._active['text']}; 
+                border: black solid 1px; border-radius: 4px;
+            }}
+        """
+
         self._merge_btn = QPushButton()
         self._merge_btn.setToolTip("Merge with card above")
         self._merge_btn.setFixedSize(22, 18)
+        self._merge_btn.setStyleSheet(ocr_act_btn_style)
         ic_merge = load_icon("merge")
         if not ic_merge.isNull():
             self._merge_btn.setIcon(ic_merge)
@@ -291,6 +299,7 @@ class OCRCard(QWidget):
         edit_btn = QPushButton()
         edit_btn.setToolTip("Edit OCR text")
         edit_btn.setFixedSize(22, 18)
+        edit_btn.setStyleSheet(ocr_act_btn_style)
         ic_edit = load_icon("edit")
         if not ic_edit.isNull():
             edit_btn.setIcon(ic_edit)
@@ -303,6 +312,7 @@ class OCRCard(QWidget):
         copy_btn = QPushButton()
         copy_btn.setToolTip("Copy text")
         copy_btn.setFixedSize(22, 18)
+        copy_btn.setStyleSheet(ocr_act_btn_style)
         ic_copy = load_icon("copy")
         if not ic_copy.isNull():
             copy_btn.setIcon(ic_copy)
@@ -317,6 +327,7 @@ class OCRCard(QWidget):
         dismiss_btn = QPushButton()
         dismiss_btn.setToolTip("Dismiss")
         dismiss_btn.setFixedSize(22, 18)
+        dismiss_btn.setStyleSheet(ocr_act_btn_style)
         ic_dismiss = load_icon("remove")
         if not ic_dismiss.isNull():
             dismiss_btn.setIcon(ic_dismiss)
