@@ -592,6 +592,17 @@ class OCRPanel(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
         self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {theme._active['text_muted']};
+                border: 1px solid {theme._active['popup_border']}; border-radius: 4px;
+                padding: 4px 8px; font-size: 9pt;
+            }}
+            QPushButton:hover {{
+                background: {theme._active['hover_bg']}; color: {theme._active['text']};
+                border-color: {theme.ACCENT};
+            }}
+        """)
         self.clear_btn.clicked.connect(self.clear_all)
         btn_row.addWidget(self.clear_btn)
         layout.addLayout(btn_row)
