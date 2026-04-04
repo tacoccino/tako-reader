@@ -40,6 +40,7 @@ THEMES: dict[str, dict] = {
         "ocr_word_hover_fg": "#1e1e2e",
         "ocr_word_hover_bg": "#93b4d4",
         "separator":  "#333",
+        "separator_bg": "#1e1e1e",
     },
     "light": {
         "name":       "Light",
@@ -67,6 +68,7 @@ THEMES: dict[str, dict] = {
         "ocr_word_hover_fg": "#ffffff",
         "ocr_word_hover_bg": "#1a5599",
         "separator":  "#c0c0c0",
+        "separator_bg": "#dcdcdc",
     },
     "oled_black": {
         "name":       "OLED Black",
@@ -94,6 +96,7 @@ THEMES: dict[str, dict] = {
         "ocr_word_hover_fg": "#0a0a0a",
         "ocr_word_hover_bg": "#93b4d4",
         "separator":  "#222",
+        "separator_bg": "#0a0a0a",
     },
     "bright": {
         "name":       "Bright",
@@ -121,6 +124,7 @@ THEMES: dict[str, dict] = {
         "ocr_word_hover_fg": "#ffffff",
         "ocr_word_hover_bg": "#1a5599",
         "separator":  "#ddd",
+        "separator_bg": "#f8f8f8",
     },
 }
 
@@ -240,7 +244,10 @@ def _rebuild_styles():
         }}
         #ToolBar QPushButton:hover {{ background: {_t('hover_bg')}; color: {_t('text')}; }}
         #ToolBar QPushButton:checked {{ background: {a}; color: #fff; }}
-        #ToolBar QFrame {{ color: {_t('separator')}; }}
+        #ToolBar QFrame {{ 
+            background: {_t('separator_bg')}; color: {_t('separator')}; 
+            border-bottom: 1px solid {_t('border')};
+        }}
 
         #NavBar {{ background: {_t('nav_bg')}; border-top: 1px solid {_t('border')}; }}
         #NavBar QPushButton {{

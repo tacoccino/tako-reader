@@ -375,7 +375,7 @@ class SettingsDialog(QDialog):
         self.forvo_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._row(dict_lay, "Forvo API Key", self.forvo_key,
                   hint="Optional. Provides native speaker pronunciations. "
-                       "Get a free key at https://api.forvo.com. "
+                       "Obtain a key at https://api.forvo.com. "
                        "Falls back to Google Translate TTS if blank or if "
                        "Forvo has no recording for a word.")
 

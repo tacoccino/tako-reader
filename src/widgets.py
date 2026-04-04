@@ -479,7 +479,7 @@ class OCRCard(QWidget):
         self._edit_widget.setStyleSheet(
             f"background: {theme._active['input_bg']}; color: {theme._active['text']};"
             f" border: 2px solid {theme.ACCENT}; border-radius: 4px;"
-            f" padding: 4px; font-size: 14pt;"
+            f" padding: 6px; font-size: 12pt;"
         )
         # Size it to roughly match the browser
         self._edit_widget.setFixedHeight(max(self.browser.height(), 60))
@@ -487,7 +487,7 @@ class OCRCard(QWidget):
         # Done / Cancel buttons
         self._edit_btns = QWidget()
         edit_btn_lay = QHBoxLayout(self._edit_btns)
-        edit_btn_lay.setContentsMargins(0, 2, 0, 0)
+        edit_btn_lay.setContentsMargins(0, 2, 2, 4)
         edit_btn_lay.setSpacing(4)
         edit_btn_lay.addStretch()
         done_btn = QPushButton("Done")

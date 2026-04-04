@@ -488,16 +488,7 @@ class TakoReader(QMainWindow):
         self.ocr_btn = _btn("🔤 OCR Mode", self._toggle_ocr_mode, checkable=True,
                             icon_name="ocr", tooltip=f"OCR Selection Mode ({_ctrl()}+Shift+O)")
         lay.addWidget(self.ocr_btn)
-
-        # ── Right side: bookmarks + OCR panel toggle ──
         lay.addStretch()
-        self._page_mode_btn = QPushButton("Single Page")
-        self._page_mode_btn.clicked.connect(
-            lambda: self._set_page_mode(
-                "double" if self._page_mode == "single" else "single"
-            )
-        )
-        lay.addWidget(self._page_mode_btn)
 
         # Page offset toggle (only visible in double-page mode)
         self._offset_btn = _btn("⇄", self._toggle_page_offset,
@@ -506,6 +497,15 @@ class TakoReader(QMainWindow):
         self._offset_btn.setCheckable(True)
         self._offset_btn.setVisible(False)
         lay.addWidget(self._offset_btn)
+
+        # ── Right side: bookmarks + OCR panel toggle ──
+        self._page_mode_btn = QPushButton("Single Page")
+        self._page_mode_btn.clicked.connect(
+            lambda: self._set_page_mode(
+                "double" if self._page_mode == "single" else "single"
+            )
+        )
+        lay.addWidget(self._page_mode_btn)
 
         lay.addWidget(_sep())
         
