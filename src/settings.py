@@ -344,6 +344,14 @@ class SettingsDialog(QDialog):
 
         # Reading
         read_lay = self._section("Reading")
+        self.default_reading_combo = QComboBox()
+        self.default_reading_combo.addItem("Right → Left (Manga)", "rtl")
+        self.default_reading_combo.addItem("Left → Right (Western)", "ltr")
+        self._row(read_lay, "Default Direction", self.default_reading_combo,
+                  hint="Reading direction for newly opened files. "
+                       "Changing direction while reading a file saves "
+                       "that choice per file.")
+
         self.auto_spread_check = QCheckBox()
         self._row(read_lay, "Auto-detect Spreads", self.auto_spread_check,
                   hint="In double-page mode, automatically display landscape "
@@ -702,6 +710,11 @@ class SettingsDialog(QDialog):
             self.app_settings.value("general/keep_awake", True, type=bool))
         self.auto_spread_check.setChecked(
             self.app_settings.value("view/auto_spread", True, type=bool))
+        saved_reading_dir = self.app_settings.value("view/default_reading_mode", "rtl")
+        for i in range(self.default_reading_combo.count()):
+            if self.default_reading_combo.itemData(i) == saved_reading_dir:
+                self.default_reading_combo.setCurrentIndex(i)
+                break
         saved_dict_mode = self.app_settings.value("dict/mode", "offline_first")
         for i in range(self.dict_mode_combo.count()):
             if self.dict_mode_combo.itemData(i) == saved_dict_mode:
@@ -766,6 +779,8 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/preload_count", self.preload_spin.value())
         self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
         self.app_settings.setValue("view/auto_spread",      self.auto_spread_check.isChecked())
+        self.app_settings.setValue("view/default_reading_mode",
+                                   self.default_reading_combo.currentData())
         self.app_settings.setValue("dict/mode",             self.dict_mode_combo.currentData())
         self.app_settings.setValue("dict/forvo_key",        self.forvo_key.text().strip())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())

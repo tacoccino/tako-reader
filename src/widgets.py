@@ -288,6 +288,18 @@ class OCRCard(QWidget):
         self._merge_btn.clicked.connect(lambda: self.merge_requested.emit(self))
         btn_lay.addWidget(self._merge_btn)
 
+        edit_btn = QPushButton()
+        edit_btn.setToolTip("Edit OCR text")
+        edit_btn.setFixedSize(22, 18)
+        ic_edit = load_icon("edit")
+        if not ic_edit.isNull():
+            edit_btn.setIcon(ic_edit)
+            edit_btn.setIconSize(QSize(12, 12))
+        else:
+            edit_btn.setText("✎")
+        edit_btn.clicked.connect(self._start_edit)
+        btn_lay.addWidget(edit_btn)
+
         copy_btn = QPushButton()
         copy_btn.setToolTip("Copy text")
         copy_btn.setFixedSize(22, 18)
@@ -443,6 +455,69 @@ class OCRCard(QWidget):
 
     def set_merge_visible(self, visible: bool):
         self._merge_btn.setVisible(visible)
+
+    def _start_edit(self):
+        """Replace the browser with a plain text editor for correction."""
+        if hasattr(self, "_edit_widget") and self._edit_widget.isVisible():
+            return  # already editing
+
+        from PyQt6.QtWidgets import QTextEdit as _QTextEdit
+        self._edit_widget = _QTextEdit()
+        self._edit_widget.setPlainText(self._raw_text)
+        self._edit_widget.setFont(QFont("Noto Serif JP, serif", 14))
+        self._edit_widget.setStyleSheet(
+            f"background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 2px solid {theme.ACCENT}; border-radius: 4px;"
+            f" padding: 4px; font-size: 14pt;"
+        )
+        # Size it to roughly match the browser
+        self._edit_widget.setFixedHeight(max(self.browser.height(), 60))
+
+        # Done / Cancel buttons
+        self._edit_btns = QWidget()
+        edit_btn_lay = QHBoxLayout(self._edit_btns)
+        edit_btn_lay.setContentsMargins(0, 2, 0, 0)
+        edit_btn_lay.setSpacing(4)
+        edit_btn_lay.addStretch()
+        done_btn = QPushButton("Done")
+        done_btn.setFixedWidth(54)
+        done_btn.clicked.connect(self._commit_edit)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedWidth(54)
+        cancel_btn.clicked.connect(self._cancel_edit)
+        edit_btn_lay.addWidget(done_btn)
+        edit_btn_lay.addWidget(cancel_btn)
+
+        # Swap browser for editor
+        layout = self.layout()
+        self.browser.hide()
+        self._btn_bar.hide()
+        layout.addWidget(self._edit_widget)
+        layout.addWidget(self._edit_btns)
+        self._edit_widget.setFocus()
+
+    def _commit_edit(self):
+        """Apply the edited text and return to normal display."""
+        new_text = self._edit_widget.toPlainText().strip()
+        if new_text:
+            self._raw_text = new_text
+        self._teardown_edit()
+        self._render()
+
+    def _cancel_edit(self):
+        """Discard edits and return to normal display."""
+        self._teardown_edit()
+
+    def _teardown_edit(self):
+        """Remove the edit widgets and restore the browser."""
+        if hasattr(self, "_edit_widget"):
+            self._edit_widget.deleteLater()
+            del self._edit_widget
+        if hasattr(self, "_edit_btns"):
+            self._edit_btns.deleteLater()
+            del self._edit_btns
+        self.browser.show()
+        self._btn_bar.show()
 
     @property
     def raw_text(self) -> str:

@@ -334,8 +334,8 @@ class TakoReader(QMainWindow):
         self.act_ocr_panel  = _act("toggle_ocr_panel",  "Show OCR Panel",
                                    self._toggle_ocr_panel, checkable=True, checked=True)
 
-        rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
-        rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
+        self._rtl_act = QAction("RTL (Manga)", self, checkable=True, checked=True)
+        self._rtl_act.triggered.connect(lambda v: self._set_reading_mode("rtl" if v else "ltr"))
         fs_act = _act("fullscreen", "Toggle Fullscreen",
                       lambda: self._exit_fullscreen()
                       if self.isFullScreen() else self._enter_fullscreen())
@@ -362,7 +362,7 @@ class TakoReader(QMainWindow):
         view_menu.addSeparator()
         view_menu.addActions([self.act_thumbnails, self.act_ocr_panel])
         view_menu.addSeparator()
-        view_menu.addAction(rtl_act)
+        view_menu.addAction(self._rtl_act)
         view_menu.addSeparator()
         view_menu.addAction(fs_act)
         view_menu.addSeparator()
@@ -754,6 +754,7 @@ class TakoReader(QMainWindow):
         self._rotation     = self._load_rotation()
         self._adjustments  = self._load_adjustments()
         self._page_offset  = self._load_page_offset()
+        self._reading_mode = self._load_reading_mode()
         self._adj_cache.clear()
         self._at_volume_boundary = False
         self._compute_spreads()
@@ -762,6 +763,9 @@ class TakoReader(QMainWindow):
         if hasattr(self, "_offset_btn"):
             self._offset_btn.setChecked(self._page_offset == 1)
             self._offset_btn.setVisible(self._page_mode == "double")
+        # Sync RTL menu action
+        if hasattr(self, "_rtl_act"):
+            self._rtl_act.setChecked(self._reading_mode == "rtl")
 
         # Series detection — scan sibling files for volume navigation
         resolved = Path(path).resolve()
@@ -1461,7 +1465,30 @@ class TakoReader(QMainWindow):
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
+        self._save_reading_mode()
+        self._compute_spreads()
+        if hasattr(self, "_rtl_act"):
+            self._rtl_act.setChecked(mode == "rtl")
+        if self._pages:
+            self.go_to_page(self._current)
         self._toast(f"Reading mode: {'Right→Left (Manga)' if mode == 'rtl' else 'Left→Right'}")
+
+    def _reading_mode_key(self) -> str:
+        import hashlib
+        h = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        return f"reading_mode/{h}"
+
+    def _load_reading_mode(self) -> str:
+        if not self._current_file:
+            return self._settings.value("view/default_reading_mode", "rtl")
+        saved = self._settings.value(self._reading_mode_key(), "")
+        if saved:
+            return saved
+        return self._settings.value("view/default_reading_mode", "rtl")
+
+    def _save_reading_mode(self):
+        if self._current_file:
+            self._settings.setValue(self._reading_mode_key(), self._reading_mode)
 
     # ─────────────────────────────────────────────────────────────────────────
     # OCR
