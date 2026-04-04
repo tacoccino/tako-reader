@@ -176,7 +176,7 @@ class DictPopup(QWidget):
         self.setMaximumWidth(400)
         self.setMaximumHeight(520)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(theme.POPUP_STYLESHEET + "\n" + theme.TOOLTIP_STYLESHEET)
+        self.setStyleSheet(theme.POPUP_STYLESHEET)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -541,14 +541,16 @@ class DictPopup(QWidget):
             d = dlg.get_values()
             self._add_to_anki(d["word"], d["reading"], d["definition"],
                               sentence_override=d["sentence"],
-                              image_override=d.get("image", ""))
+                              image_override=d.get("image", ""),
+                              audio_word_override=d.get("audio_word", ""))
         dlg.accepted.connect(_on_accepted)
         dlg.setModal(False)
         dlg.show()
 
     def _add_to_anki(self, word: str, reading: str, definition: str,
                      sentence_override: str | None = None,
-                     image_override: str = ""):
+                     image_override: str = "",
+                     audio_word_override: str | None = None):
         s = self.app_settings
         url   = s.value("anki/url",   "http://localhost:8765")
         key   = s.value("anki/key",   "")
@@ -587,12 +589,17 @@ class DictPopup(QWidget):
                         pass
             elif source == "Audio":
                 # Fetch audio (from cache or network) and upload to Anki
-                audio_data = self._audio_cache.get(word)
+                audio_word = (audio_word_override
+                              if audio_word_override is not None
+                              else word)
+                if not audio_word:
+                    continue  # user cleared the audio field
+                audio_data = self._audio_cache.get(audio_word)
                 if not audio_data:
-                    audio_data = fetch_audio(word, self.app_settings)
+                    audio_data = fetch_audio(audio_word, self.app_settings)
                 if audio_data:
                     import time, base64
-                    audio_filename = f"tako_{word}_{int(time.time()*1000)}.mp3"
+                    audio_filename = f"tako_{audio_word}_{int(time.time()*1000)}.mp3"
                     try:
                         b64_audio = base64.b64encode(audio_data).decode()
                         anki_store_media(url, key, audio_filename, b64_audio)

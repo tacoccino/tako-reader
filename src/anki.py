@@ -317,6 +317,32 @@ class AnkiEditDialog(QDialog):
             if image_b64:
                 self._set_image(image_b64)
 
+        # Audio field
+        audio_lbl = QLabel("Audio")
+        root.addWidget(audio_lbl)
+        audio_row = QHBoxLayout()
+        audio_row.setSpacing(6)
+        self._audio_edit = QLineEdit(word)
+        self._audio_edit.setPlaceholderText("Word to pronounce (blank to skip)")
+        self._audio_edit.setToolTip(
+            "The word sent to TTS / Forvo for pronunciation.\n"
+            "Change to the reading if the kanji form isn't pronounced correctly.\n"
+            "Leave blank to skip audio."
+        )
+        audio_row.addWidget(self._audio_edit, stretch=1)
+
+        play_btn = QPushButton("🔊")
+        play_btn.setFixedSize(30, 26)
+        play_btn.setToolTip("Preview pronunciation")
+        play_btn.clicked.connect(self._preview_audio)
+        audio_row.addWidget(play_btn)
+        root.addLayout(audio_row)
+
+        self._audio_status = QLabel("")
+        self._audio_status.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
+        root.addWidget(self._audio_status)
+        self._app_settings = app_settings
+
         # Buttons
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -388,6 +414,26 @@ class AnkiEditDialog(QDialog):
         except Exception as e:
             print(f"[upload error] {e}")
 
+    def _preview_audio(self):
+        """Fetch and play pronunciation for the word in the audio field."""
+        word = self._audio_edit.text().strip()
+        if not word:
+            self._audio_status.setText("No word to pronounce")
+            return
+        self._audio_status.setText("Fetching audio…")
+        from audio import AudioFetchWorker, AudioPlayer
+        self._audio_preview_worker = AudioFetchWorker(word, self._app_settings)
+        def _on_done(w, data):
+            AudioPlayer.get().play_bytes(data)
+            forvo_key = self._app_settings.value("dict/forvo_key", "").strip()
+            source = "Forvo" if forvo_key else "Google TTS"
+            self._audio_status.setText(f"🔊 Playing ({source})")
+        def _on_fail(w, err):
+            self._audio_status.setText(f"🔇 {err}")
+        self._audio_preview_worker.finished.connect(_on_done)
+        self._audio_preview_worker.failed.connect(_on_fail)
+        self._audio_preview_worker.start()
+
     def get_values(self) -> dict[str, str]:
         result = {}
         for key, widget in self._editors.items():
@@ -396,4 +442,5 @@ class AnkiEditDialog(QDialog):
             else:
                 result[key.lower()] = widget.text()
         result["image"] = self._image_b64
+        result["audio_word"] = self._audio_edit.text().strip()
         return result

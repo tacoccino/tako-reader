@@ -1769,6 +1769,11 @@ class TakoReader(QMainWindow):
         accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
         theme.apply_theme(tid, accent)
         self.setStyleSheet(theme.APP_STYLESHEET)
+        # Update app-level tooltip stylesheet so all tooltips (including
+        # those on popup windows) use the current theme colors
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(theme.TOOLTIP_STYLESHEET)
 
     def _refresh_theme(self):
         """Re-apply the active theme to every widget after a theme change."""
