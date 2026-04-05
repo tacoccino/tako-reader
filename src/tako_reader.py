@@ -1736,31 +1736,87 @@ class TakoReader(QMainWindow):
             self._toast(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
-        lines = []
-        try:
-            import manga_ocr
-            lines.append("✅ manga-ocr is installed.")
-        except ImportError:
-            lines.append("❌ manga-ocr is NOT installed.")
-            lines.append("   Run: pip install manga-ocr")
+        from PyQt6.QtCore import QThread, pyqtSignal
 
-        try:
-            import torch
-            lines.append(f"✅ PyTorch {torch.__version__} installed.")
-            if torch.cuda.is_available():
-                for i in range(torch.cuda.device_count()):
-                    name = torch.cuda.get_device_name(i)
-                    cap  = torch.cuda.get_device_capability(i)
-                    lines.append(f"✅ CUDA:{i}  {name}  (sm_{cap[0]}{cap[1]})")
-            else:
-                lines.append("⚠️  CUDA not available — CPU only.")
-                lines.append("   For RTX 50-series, install PyTorch nightly:")
-                lines.append("   pip install --pre torch --index-url")
-                lines.append("   https://download.pytorch.org/whl/nightly/cu128")
-        except ImportError:
-            lines.append("❌ PyTorch not installed.")
+        class _OCRCheckWorker(QThread):
+            finished = pyqtSignal(list)
+            def run(self_):
+                lines = []
+                try:
+                    import manga_ocr
+                    lines.append("✅ manga-ocr is installed.")
+                except ImportError:
+                    lines.append("❌ manga-ocr is NOT installed.")
+                    lines.append("   Run: pip install manga-ocr")
+                try:
+                    import torch
+                    lines.append(f"✅ PyTorch {torch.__version__} installed.")
+                    if torch.cuda.is_available():
+                        for i in range(torch.cuda.device_count()):
+                            name = torch.cuda.get_device_name(i)
+                            cap  = torch.cuda.get_device_capability(i)
+                            lines.append(f"✅ CUDA:{i}  {name}  (sm_{cap[0]}{cap[1]})")
+                    else:
+                        lines.append("⚠️  CUDA not available — CPU only.")
+                        lines.append("   For RTX 50-series, install PyTorch nightly:")
+                        lines.append("   pip install --pre torch --index-url")
+                        lines.append("   https://download.pytorch.org/whl/nightly/cu128")
+                except ImportError:
+                    lines.append("❌ PyTorch not installed.")
+                self_.finished.emit(lines)
 
-        QMessageBox.information(self, "OCR Status", "\n".join(lines))
+        # Build spinner dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Checking OCR…")
+        dlg.setFixedSize(300, 100)
+        dlg.setModal(True)
+        dlg.setStyleSheet(
+            f"QDialog {{ background: {theme._active['window_bg']}; color: {theme._active['text']}; }}"
+            f" QLabel {{ color: {theme._active['text']}; }}"
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.setSpacing(12)
+
+        spinner_lbl = QLabel("⏳  Checking OCR installation…")
+        spinner_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spinner_lbl.setStyleSheet("font-size: 10pt;")
+        lay.addWidget(spinner_lbl)
+
+        # Animate the spinner text
+        _frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        _tick = {"i": 0}
+        spin_timer = QTimer(dlg)
+        def _animate():
+            _tick["i"] = (_tick["i"] + 1) % len(_frames)
+            spinner_lbl.setText(f"{_frames[_tick['i']]}  Checking OCR installation…")
+        spin_timer.timeout.connect(_animate)
+        spin_timer.start(80)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedWidth(80)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        # Track whether cancelled
+        _cancelled = {"v": False}
+        dlg.rejected.connect(lambda: _cancelled.__setitem__("v", True))
+
+        def _on_finished(lines):
+            spin_timer.stop()
+            if not _cancelled["v"]:
+                dlg.accept()
+                QMessageBox.information(self, "OCR Status", "\n".join(lines))
+
+        worker = _OCRCheckWorker()
+        worker.finished.connect(_on_finished)
+        worker.start()
+        self._ocr_check_worker = worker  # prevent GC
+        dlg.exec()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Keyboard shortcuts
