@@ -307,6 +307,14 @@ def _rebuild_styles():
         }}
         QScrollBar::handle:vertical {{ border-radius: 4px; min-height: 20px; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        QScrollBar:left-arrow:vertical, QScrollBar::right-arrow:vertical {{ 
+            border: 2px solid grey;
+            width: 3px;
+            height: 3px;
+            background: white;
+        }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background: none;}}
+
     """
 
     SETTINGS_STYLESHEET = f"""
