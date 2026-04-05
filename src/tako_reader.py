@@ -697,6 +697,9 @@ class TakoReader(QMainWindow):
             self._offset_btn.setVisible(False)
         if hasattr(self, "_menu_offset_act"):
             self._menu_offset_act.setChecked(False)
+        fk = self._ocr_file_key()
+        if fk:
+            self.ocr_panel.save_results(fk)
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
         self._set_keep_awake(False)
@@ -749,6 +752,13 @@ class TakoReader(QMainWindow):
             )
         if self._settings.value("general/keep_awake", True, type=bool):
             self._set_keep_awake(True)
+
+        # Save OCR results for the previous file before switching
+        old_ocr_key = self._ocr_file_key()
+        if old_ocr_key:
+            self.ocr_panel.save_results(old_ocr_key)
+        self.ocr_panel.clear_all()
+
         self._current_file = str(Path(path).resolve())
         self._bookmarks    = self._load_bookmarks()
         self._rotation     = self._load_rotation()
@@ -774,8 +784,11 @@ class TakoReader(QMainWindow):
         else:
             self._series = None
         self._update_series_ui()
-        if self._settings.value("ocr/clear_on_file", True, type=bool):
-            self.ocr_panel.clear_all()
+
+        # Load saved OCR results for the new file
+        new_fk = self._ocr_file_key()
+        if new_fk:
+            self.ocr_panel.load_results(new_fk)
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
@@ -1044,6 +1057,7 @@ class TakoReader(QMainWindow):
         self._save_session_page(index)
         if hasattr(self, "tb_bookmark_btn"):
             self._update_bookmark_btn()
+        self.ocr_panel.set_current_page(index)
         self._preload_pages(index)
 
     def prev_page(self):
@@ -1463,6 +1477,13 @@ class TakoReader(QMainWindow):
         if self._current_file:
             self._settings.setValue(self._offset_key(), self._page_offset)
 
+    def _ocr_file_key(self) -> str:
+        """Return a short hash key for OCR result persistence."""
+        if not self._current_file:
+            return ""
+        import hashlib
+        return hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
         self._save_reading_mode()
@@ -1516,8 +1537,14 @@ class TakoReader(QMainWindow):
             if not mgr.is_alive():
                 self.ocr_panel.set_ocr_state("loading")
         self.ocr_panel.set_status(f"⏳ Running OCR on {device}…")
+
+        # Determine which page the selection belongs to
+        ocr_page = self._detect_ocr_page(rect)
+
         self._ocr_worker = OCRWorker(image, rect, device=device)
-        self._ocr_worker.result_ready.connect(self.ocr_panel.set_text)
+        self._ocr_worker.result_ready.connect(
+            lambda text, p=ocr_page: self.ocr_panel.set_text(text, page_index=p)
+        )
         self._ocr_worker.result_ready.connect(
             lambda _: self.ocr_panel.set_ocr_state("ready")
         )
@@ -1526,6 +1553,35 @@ class TakoReader(QMainWindow):
             lambda _: self.ocr_panel.set_ocr_state("error")
         )
         self._ocr_worker.start()
+
+    def _detect_ocr_page(self, rect: QRect) -> int:
+        """Determine which page index an OCR selection rect belongs to.
+        In double-page mode, checks whether the rect center falls on
+        the left or right side of the combined pixmap, accounting for
+        RTL reading direction and individual page widths.
+        """
+        if self._page_mode != "double" or not self._spreads:
+            return self._current
+
+        spread = self._spread_for_page(self._current)
+        if len(spread) == 1:
+            return spread[0]
+
+        # Get the width of the first page in the spread (at display scale)
+        idx_a, idx_b = spread
+        first_width = int(self._pages[idx_a].width() * self.page_view._scale)
+
+        # rect is in source-image coordinates (already divided by scale in PageView),
+        # so compare using source widths
+        first_width_src = self._pages[idx_a].width()
+        center_x = rect.center().x()
+
+        if self._reading_mode == "rtl":
+            # RTL: left half = idx_b, right half = idx_a
+            return idx_b if center_x < first_width_src else idx_a
+        else:
+            # LTR: left half = idx_a, right half = idx_b
+            return idx_a if center_x < first_width_src else idx_b
 
     # ─────────────────────────────────────────────────────────────────────────
     # Image capture via marquee
@@ -2053,6 +2109,9 @@ class TakoReader(QMainWindow):
 
     def closeEvent(self, event):
         self._set_keep_awake(False)
+        fk = self._ocr_file_key()
+        if fk:
+            self.ocr_panel.save_results(fk)
         self._settings.setValue("geometry",          self.saveGeometry())
         self._settings.setValue("ui/thumb_visible",  self.thumb_list.isVisible())
         self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())

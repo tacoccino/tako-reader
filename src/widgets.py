@@ -240,7 +240,7 @@ class OCRCard(QWidget):
     dismiss_requested = pyqtSignal(object)    # emits self
 
     def __init__(self, raw_text: str, segmentation_on: bool,
-                 dict_popup, parent=None):
+                 dict_popup, page_index: int = 0, parent=None):
         super().__init__(parent)
         self.setObjectName("OCRCard")
         self.setStyleSheet(theme.CARD_STYLE)
@@ -249,6 +249,7 @@ class OCRCard(QWidget):
         self._hovered_word   = ""
         self._last_hovered   = ""
         self._dict_popup     = dict_popup
+        self._page_index     = page_index
 
         # Use a plain layout — buttons float over the browser as an overlay
         outer = QVBoxLayout(self)
@@ -534,6 +535,10 @@ class OCRCard(QWidget):
     def raw_text(self) -> str:
         return self._raw_text
 
+    @property
+    def page_index(self) -> int:
+        return self._page_index
+
 
 class OCRPanel(QWidget):
     def __init__(self):
@@ -543,6 +548,8 @@ class OCRPanel(QWidget):
         self._dict_popup      = None
         self._app_settings    = None
         self._cards: list[OCRCard] = []
+        self._current_page    = 0
+        self._filter_mode     = "page"  # "page" | "all"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -563,6 +570,15 @@ class OCRPanel(QWidget):
         self._title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         header_row.addWidget(self._title, stretch=1)
 
+        # Filter toggle: Page / All
+        self._filter_btn = QPushButton("Page")
+        self._filter_btn.setCheckable(True)
+        self._filter_btn.setChecked(False)
+        self._filter_btn.setToolTip("Show OCR results for current page only, or all pages")
+        self._filter_btn.setStyleSheet(theme.segment_btn_stylesheet())
+        self._filter_btn.clicked.connect(self._toggle_filter)
+        header_row.addWidget(self._filter_btn)
+
         self.seg_check = QPushButton("Segment")
         self.seg_check.setCheckable(True)
         self.seg_check.setChecked(False)
@@ -571,6 +587,12 @@ class OCRPanel(QWidget):
         self.seg_check.clicked.connect(self._on_seg_toggled)
         header_row.addWidget(self.seg_check)
         layout.addLayout(header_row)
+
+        # ── Page count label ──
+        self._page_count_lbl = QLabel("")
+        self._page_count_lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
+        self._page_count_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._page_count_lbl)
 
         # ── Scroll area containing cards ──
         self._scroll = QScrollArea()
@@ -617,10 +639,52 @@ class OCRPanel(QWidget):
         self._app_settings = app_settings
         self._main_window  = main_window
         self._dict_popup   = DictPopup(app_settings, main_window=main_window)
-        # Back-fill popup ref into any cards already created (shouldn't happen
-        # in practice but guards against ordering edge cases)
         for card in self._cards:
             card._dict_popup = self._dict_popup
+
+    # ── Filter toggle ────────────────────────────────────────────────────────
+
+    def _toggle_filter(self):
+        if self._filter_btn.isChecked():
+            self._filter_mode = "all"
+            self._filter_btn.setText("All")
+        else:
+            self._filter_mode = "page"
+            self._filter_btn.setText("Page")
+        self._apply_filter()
+
+    def _apply_filter(self):
+        """Show/hide cards based on filter mode and current page."""
+        for card in self._cards:
+            if self._filter_mode == "all":
+                card.setVisible(True)
+            else:
+                card.setVisible(card.page_index == self._current_page)
+        self._update_merge_buttons()
+        self._update_page_count_label()
+
+    def set_current_page(self, page_index: int):
+        """Called by TakoReader when the page changes."""
+        self._current_page = page_index
+        if self._filter_mode == "page":
+            self._apply_filter()
+        self._update_page_count_label()
+
+    def _update_page_count_label(self):
+        """Update the label showing how many results exist for this page."""
+        page_count = sum(1 for c in self._cards if c.page_index == self._current_page)
+        total = len(self._cards)
+        if total == 0:
+            self._page_count_lbl.setText("")
+        elif self._filter_mode == "page":
+            self._page_count_lbl.setText(
+                f"{page_count} result{'s' if page_count != 1 else ''} on this page"
+                f" \u00b7 {total} total"
+            )
+        else:
+            self._page_count_lbl.setText(
+                f"{total} result{'s' if total != 1 else ''}"
+            )
 
     # ── Segmentation ─────────────────────────────────────────────────────────
 
@@ -631,24 +695,29 @@ class OCRPanel(QWidget):
 
     # ── Card management ───────────────────────────────────────────────────────
 
-    def _add_card(self, raw_text: str):
+    def _add_card(self, raw_text: str, page_index: int = 0):
         card = OCRCard(raw_text, self._segmentation_on,
-                       self._dict_popup, parent=self._card_container)
+                       self._dict_popup, page_index=page_index,
+                       parent=self._card_container)
         card.word_clicked.connect(self._on_card_word_clicked)
         card.merge_requested.connect(self._on_merge_requested)
         card.dismiss_requested.connect(self._on_dismiss_requested)
-        # Insert at top (index 0), above the stretch
         self._card_lay.insertWidget(0, card)
         self._cards.insert(0, card)
+        if self._filter_mode == "page" and card.page_index != self._current_page:
+            card.setVisible(False)
         self._update_merge_buttons()
-        # Scroll to top so newest card is visible
+        self._update_page_count_label()
         QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(0))
 
     def _update_merge_buttons(self):
-        """Only show merge button on cards that have a card above them."""
-        for i, card in enumerate(self._cards):
-            # _cards[0] is newest (top); merge means append to card above = _cards[i-1]
-            card.set_merge_visible(i > 0)
+        """Only show merge button on visible cards that have a visible card above them."""
+        visible = [c for c in self._cards if c.isVisible()]
+        for card in self._cards:
+            if card in visible:
+                card.set_merge_visible(visible.index(card) > 0)
+            else:
+                card.set_merge_visible(False)
 
     def _on_card_word_clicked(self, word: str, sentence: str):
         if self._dict_popup:
@@ -656,10 +725,11 @@ class OCRPanel(QWidget):
         self.status.setText(f"Looking up: {word}")
 
     def _on_merge_requested(self, card: OCRCard):
-        idx = self._cards.index(card)
-        if idx == 0:
-            return  # no card above
-        above = self._cards[idx - 1]
+        visible = [c for c in self._cards if c.isVisible()]
+        idx = visible.index(card) if card in visible else -1
+        if idx <= 0:
+            return
+        above = visible[idx - 1]
         above.absorb(card)
         self._remove_card(card)
 
@@ -672,6 +742,7 @@ class OCRPanel(QWidget):
         self._card_lay.removeWidget(card)
         card.deleteLater()
         self._update_merge_buttons()
+        self._update_page_count_label()
 
     def clear_all(self):
         for card in list(self._cards):
@@ -679,23 +750,51 @@ class OCRPanel(QWidget):
             card.deleteLater()
         self._cards.clear()
         self.status.setText("")
+        self._update_page_count_label()
+
+    # ── Persistence ───────────────────────────────────────────────────────────
+
+    def save_results(self, file_key: str):
+        """Persist all OCR card data to QSettings under the given file key."""
+        if not self._app_settings or not file_key:
+            return
+        import json as _json
+        entries = []
+        for card in reversed(self._cards):
+            entries.append({
+                "page": card.page_index,
+                "text": card.raw_text,
+            })
+        self._app_settings.setValue(f"ocr_results/{file_key}",
+                                    _json.dumps(entries, ensure_ascii=False))
+
+    def load_results(self, file_key: str):
+        """Restore OCR cards from QSettings for the given file key."""
+        if not self._app_settings or not file_key:
+            return
+        import json as _json
+        raw = self._app_settings.value(f"ocr_results/{file_key}", "")
+        if not raw:
+            return
+        try:
+            entries = _json.loads(raw)
+        except Exception:
+            return
+        for entry in entries:
+            self._add_card(entry["text"], page_index=entry.get("page", 0))
 
     # ── Public API (called by TakoReader) ─────────────────────────────────────
 
-    def set_text(self, text: str):
-        self._add_card(text)
-        self.status.setText("✓ OCR complete")
+    def set_text(self, text: str, page_index: int = 0):
+        self._add_card(text, page_index=page_index)
+        self.status.setText("\u2713 OCR complete")
 
     def set_ocr_state(self, state: str):
-        """
-        Update the OCR indicator in the panel header.
-        state: "idle" | "loading" | "ready" | "error"
-        """
         styles = {
-            "idle":    ("⬤", "#444",    "OCR status: idle"),
-            "loading": ("⬤", "#e6a817", "OCR model loading…"),
-            "ready":   ("⬤", "#2ecc71", "OCR model ready"),
-            "error":   ("⬤", "#e74c3c", "OCR failed to load"),
+            "idle":    ("\u2b24", "#444",    "OCR status: idle"),
+            "loading": ("\u2b24", "#e6a817", "OCR model loading\u2026"),
+            "ready":   ("\u2b24", "#2ecc71", "OCR model ready"),
+            "error":   ("\u2b24", "#e74c3c", "OCR failed to load"),
         }
         dot, colour, tip = styles.get(state, styles["idle"])
         self.ocr_indicator.setText(dot)
@@ -706,12 +805,12 @@ class OCRPanel(QWidget):
         self.status.setText(msg)
 
     def refresh_theme(self):
-        """Re-apply theme to panel header, segment button, and all cards."""
         self._title.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
+        self._page_count_lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
         self.seg_check.setStyleSheet(theme.segment_btn_stylesheet())
+        self._filter_btn.setStyleSheet(theme.segment_btn_stylesheet())
         for card in self._cards:
             card.refresh_theme()
-        # Recreate dict popup so it picks up new styles
         if self._app_settings:
             self._dict_popup = DictPopup(self._app_settings,
                                          main_window=getattr(self, '_main_window', None))
@@ -719,18 +818,18 @@ class OCRPanel(QWidget):
     def lookup_shortcut(self):
         """Ctrl+D: look up last hovered word across all cards."""
         if self._segmentation_on:
-            # Find the most recently hovered word across all cards
             for card in self._cards:
                 if card._last_hovered:
                     self._on_card_word_clicked(card._last_hovered, card.raw_text)
                     return
         else:
-            # Look for selected text in any card's browser
             for card in self._cards:
                 sel = card.browser.textCursor().selectedText().strip()
                 if sel:
                     self._on_card_word_clicked(sel, card.raw_text)
                     return
+
+
 
 
 # ─── Page preload worker ──────────────────────────────────────────────────────

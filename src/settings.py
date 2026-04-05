@@ -476,10 +476,6 @@ class SettingsDialog(QDialog):
         # Populate from cache instantly — no subprocess at dialog open
         self._populate_device_combo_from_cache()
 
-        self.ocr_clear_on_file_check = QCheckBox()
-        self._row(lay, "Clear on File Change", self.ocr_clear_on_file_check,
-                  hint="Clear the OCR panel when a new file is opened.")
-
         self.ocr_warmup_check = QCheckBox()
         self._row(lay, "Load at Startup", self.ocr_warmup_check,
                   hint="Pre-load the OCR model when Tako Reader starts so the "
@@ -730,8 +726,6 @@ class SettingsDialog(QDialog):
                 break
         warmup_on = self.app_settings.value("ocr/warmup", False, type=bool)
         self.ocr_warmup_check.setChecked(warmup_on)
-        clear_on_file = self.app_settings.value("ocr/clear_on_file", True, type=bool)
-        self.ocr_clear_on_file_check.setChecked(clear_on_file)
 
         # Anki — restore URL/key and pre-populate from cache for instant display
         self.anki_url.setText(
@@ -785,7 +779,6 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("dict/forvo_key",        self.forvo_key.text().strip())
         self.app_settings.setValue("ocr/device",  self.ocr_device_combo.currentData())
         self.app_settings.setValue("ocr/warmup",       self.ocr_warmup_check.isChecked())
-        self.app_settings.setValue("ocr/clear_on_file", self.ocr_clear_on_file_check.isChecked())
 
         # Anki
         self.app_settings.setValue("anki/url",   self.anki_url.text().strip())
