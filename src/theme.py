@@ -163,6 +163,7 @@ BG_PRESETS = [
     ("Black",          "#000000"),
     ("Dark Grey",      "#2d2d2d"),
     ("Warm Grey",      "#3a3530"),
+    ("Mid Grey",       "#acacac"),
     ("White",          "#ffffff"),
     ("Off-white",      "#f5f0e8"),
     ("Sepia",          "#f4ecd8"),
