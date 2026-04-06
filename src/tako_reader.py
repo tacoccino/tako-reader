@@ -323,6 +323,10 @@ class TakoReader(QMainWindow):
         file_info_act = QAction("File Info…", self)
         file_info_act.triggered.connect(self._show_file_info)
         file_menu.addAction(file_info_act)
+        file_menu.addSeparator()
+        export_act = QAction("Export OCR Notes…", self)
+        export_act.triggered.connect(self._export_ocr_notes)
+        file_menu.addAction(export_act)
         file_menu.addAction(close_act)
 
         view_menu = mb.addMenu("View")
@@ -1822,6 +1826,72 @@ class TakoReader(QMainWindow):
         self.scroll.viewport().unsetCursor()
         self.page_view._update_cursor()  # restores arrow/crosshair based on OCR mode
         self._cursor_hidden = False
+
+    def _export_ocr_notes(self):
+        """Export OCR results as a markdown or plain text file."""
+        cards = self.ocr_panel._cards
+        if not cards:
+            self._toast("No OCR results to export.")
+            return
+
+        # Default filename based on current file
+        if self._current_file:
+            stem = Path(self._current_file).stem
+        else:
+            stem = "ocr_notes"
+        default_name = f"{stem}_ocr_notes.md"
+
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Export OCR Notes",
+            str(Path(self._settings.value("last_dir", "")) / default_name),
+            "Markdown (*.md);;Plain Text (*.txt)"
+        )
+        if not path:
+            return
+
+        # Determine format from the chosen filter
+        is_markdown = selected_filter.startswith("Markdown") or path.endswith(".md")
+
+        # Collect cards grouped by page (oldest first = reversed from _cards)
+        from collections import defaultdict
+        from datetime import date
+        pages: dict[int, list[str]] = defaultdict(list)
+        for card in reversed(cards):
+            pages[card.page_index].append(card.raw_text)
+
+        lines: list[str] = []
+        file_name = Path(self._current_file).name if self._current_file else "Unknown"
+
+        if is_markdown:
+            lines.append("# Tako Reader — Session Notes")
+            lines.append("")
+            lines.append(f"**File:** {file_name}  ")
+            lines.append(f"**Date:** {date.today().isoformat()}")
+            lines.append("")
+            for page_idx in sorted(pages.keys()):
+                lines.append(f"## Page {page_idx + 1}")
+                lines.append("")
+                for text in pages[page_idx]:
+                    lines.append(text)
+                    lines.append("")
+        else:
+            lines.append("Tako Reader — Session Notes")
+            lines.append(f"File: {file_name}")
+            lines.append(f"Date: {date.today().isoformat()}")
+            lines.append("")
+            for page_idx in sorted(pages.keys()):
+                lines.append(f"--- Page {page_idx + 1} ---")
+                lines.append("")
+                for text in pages[page_idx]:
+                    lines.append(text)
+                    lines.append("")
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self._toast(f"Exported {len(cards)} results to {Path(path).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
 
     def _show_file_info(self):
         """Show a dialog with details about the currently open file."""
