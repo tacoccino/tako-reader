@@ -804,7 +804,7 @@ class OCRPanel(QWidget):
         card.update_jump_visible(self._visible_pages)
         self._card_lay.insertWidget(0, card)
         self._cards.insert(0, card)
-        if self._filter_mode == "page" and card.page_index != self._current_page:
+        if self._filter_mode == "page" and card.page_index not in self._visible_pages:
             card.setVisible(False)
         self._update_merge_buttons()
         self._update_page_count_label()
