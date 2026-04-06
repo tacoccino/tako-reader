@@ -31,7 +31,7 @@ from dictionary import DictPopup
 class PageView(QLabel):
     """Single manga page: zoom, Shift+drag pan, OCR rubber-band selection."""
 
-    ocr_requested = pyqtSignal(QImage, QRect)
+    ocr_requested  = pyqtSignal(QImage, QRect)
 
     def __init__(self):
         super().__init__()
@@ -44,6 +44,7 @@ class PageView(QLabel):
         self._scale    = 1.0
         self._fit_mode = "fit_width"
         self._ocr_mode = False
+        self.setMouseTracking(True)
 
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._sel_origin  = QPoint()
@@ -58,6 +59,11 @@ class PageView(QLabel):
         self._highlight_timer.setSingleShot(True)
         self._highlight_timer.timeout.connect(self.clear_highlight)
 
+        # OCR region hover (highlight rect on page when mouse over it)
+        self._ocr_regions: list[tuple[QRect, object]] = []  # (display-coord rect, card)
+        self._hovered_region: QRect | None = None
+        self._hovered_card_ref = None
+
     def set_highlight(self, source_rect: QRect, duration_ms: int = 0):
         """Show a highlight overlay at the given source-image rect.
         If duration_ms > 0, auto-clear after that time."""
@@ -70,6 +76,11 @@ class PageView(QLabel):
         self._highlight_rect = None
         self._highlight_timer.stop()
         self.update()
+
+    def set_ocr_regions(self, regions: list[tuple[QRect, object]]):
+        """Set the list of (display_rect, card_ref) for hover hit-testing."""
+        self._ocr_regions = regions
+        self._hovered_region = None
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -215,6 +226,55 @@ class PageView(QLabel):
             self._rubber_band.setGeometry(
                 QRect(self._sel_origin, event.pos()).normalized()
             )
+            return
+        # Region hover hit-test (only in OCR mode, not while drawing)
+        if self._ocr_mode and self._ocr_regions and self._pixmap_orig:
+            self._hit_test_regions(event.pos())
+
+    def _hit_test_regions(self, pos: QPoint):
+        """Check if cursor is over any stored OCR region and highlight it."""
+        pm = self.pixmap()
+        if not pm:
+            return
+        dpr = pm.devicePixelRatio()
+        pm_lw = pm.width() / dpr
+        pm_lh = pm.height() / dpr
+        off_x = (self.width() - pm_lw) / 2
+        off_y = (self.height() - pm_lh) / 2
+
+        # Convert mouse pos to source-image coords
+        src_x = (pos.x() - off_x) / self._scale
+        src_y = (pos.y() - off_y) / self._scale
+
+        for region, card_ref in self._ocr_regions:
+            if region.contains(int(src_x), int(src_y)):
+                if self._hovered_region is not region:
+                    self._hovered_region = region
+                    self.set_highlight(region)
+                    # Show overlay on the card
+                    if not hasattr(card_ref, '_highlight_overlay') or card_ref._highlight_overlay is None:
+                        ov = QWidget(card_ref)
+                        ov.setStyleSheet(
+                            f"background: rgba(53, 132, 228, 40);"
+                            f" border: 2px solid {theme.ACCENT};"
+                            f" border-radius: 6px;"
+                        )
+                        ov.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                        card_ref._highlight_overlay = ov
+                    card_ref._highlight_overlay.setGeometry(card_ref.rect())
+                    card_ref._highlight_overlay.show()
+                    card_ref._highlight_overlay.raise_()
+                    self._hovered_card_ref = card_ref
+                return
+
+        # No hit — clear if we were hovering a region
+        if self._hovered_region is not None:
+            self._hovered_region = None
+            self.clear_highlight()
+            if hasattr(self, '_hovered_card_ref') and self._hovered_card_ref:
+                if hasattr(self._hovered_card_ref, '_highlight_overlay') and self._hovered_card_ref._highlight_overlay:
+                    self._hovered_card_ref._highlight_overlay.hide()
+                self._hovered_card_ref = None
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -953,6 +1013,16 @@ class OCRPanel(QWidget):
                 if sel:
                     self._on_card_word_clicked(sel, card.raw_text)
                     return
+
+    # ── Reverse highlight (page hover → panel) ────────────────────────────
+
+    def get_visible_regions(self) -> list[tuple[QRect, "OCRCard"]]:
+        """Return (source_rect, card) for all cards on visible pages that have a rect."""
+        regions = []
+        for card in self._cards:
+            if card.source_rect and card.page_index in self._visible_pages:
+                regions.append((card.source_rect, card))
+        return regions
 
 
 

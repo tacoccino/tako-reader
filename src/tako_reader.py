@@ -130,7 +130,7 @@ class TakoReader(QMainWindow):
         self.ocr_panel.set_settings(self._settings, main_window=self)
         self.ocr_panel.jump_to_page.connect(self._on_ocr_jump)
         self.ocr_panel.highlight_on_page.connect(self._on_ocr_highlight)
-        self.ocr_panel.highlight_clear.connect(self.page_view.clear_highlight)
+        self.ocr_panel.highlight_clear.connect(self._on_ocr_highlight_clear)
         # Marquee overlay — parented to scroll so it covers only the page area
         self._marquee = MarqueeOverlay(self.scroll.viewport())
         self._marquee.hide()
@@ -1070,6 +1070,7 @@ class TakoReader(QMainWindow):
         self.ocr_panel.set_current_page(index, visible_pages=set(
             self._spread_for_page(index) if self._spreads else (index,)
         ))
+        self._update_ocr_regions()
         self._preload_pages(index)
 
     def prev_page(self):
@@ -1564,6 +1565,9 @@ class TakoReader(QMainWindow):
         self._ocr_worker.result_ready.connect(
             lambda _: self.ocr_panel.set_ocr_state("ready")
         )
+        self._ocr_worker.result_ready.connect(
+            lambda _: self._update_ocr_regions()
+        )
         self._ocr_worker.error_occurred.connect(self.ocr_panel.set_status)
         self._ocr_worker.error_occurred.connect(
             lambda _: self.ocr_panel.set_ocr_state("error")
@@ -1672,6 +1676,19 @@ class TakoReader(QMainWindow):
         display_rect = self._to_display_rect(page_idx, page_rect)
         if display_rect:
             self.page_view.set_highlight(display_rect)
+
+    def _on_ocr_highlight_clear(self):
+        """Clear highlight from panel hover."""
+        self.page_view.clear_highlight()
+
+    def _update_ocr_regions(self):
+        """Rebuild the list of OCR rects on PageView for hover hit-testing."""
+        regions = []
+        for page_rect, card in self.ocr_panel.get_visible_regions():
+            display_rect = self._to_display_rect(card.page_index, page_rect)
+            if display_rect:
+                regions.append((display_rect, card))
+        self.page_view.set_ocr_regions(regions)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Image capture via marquee
