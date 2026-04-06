@@ -52,6 +52,54 @@ class PageView(QLabel):
         self._pan_start    = QPoint()
         self._scroll_start = QPoint()
 
+        # OCR highlight overlay
+        self._highlight_rect: QRect | None = None  # source-image coords
+        self._highlight_timer = QTimer(self)
+        self._highlight_timer.setSingleShot(True)
+        self._highlight_timer.timeout.connect(self.clear_highlight)
+
+    def set_highlight(self, source_rect: QRect, duration_ms: int = 0):
+        """Show a highlight overlay at the given source-image rect.
+        If duration_ms > 0, auto-clear after that time."""
+        self._highlight_rect = source_rect
+        self.update()
+        if duration_ms > 0:
+            self._highlight_timer.start(duration_ms)
+
+    def clear_highlight(self):
+        self._highlight_rect = None
+        self._highlight_timer.stop()
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._highlight_rect or not self._pixmap_orig:
+            return
+        pm = self.pixmap()
+        if not pm:
+            return
+        dpr = pm.devicePixelRatio()
+        pm_lw = pm.width() / dpr
+        pm_lh = pm.height() / dpr
+        off_x = (self.width() - pm_lw) / 2
+        off_y = (self.height() - pm_lh) / 2
+
+        r = self._highlight_rect
+        screen_rect = QRect(
+            int(r.x() * self._scale + off_x),
+            int(r.y() * self._scale + off_y),
+            int(r.width() * self._scale),
+            int(r.height() * self._scale),
+        )
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(screen_rect, QColor(53, 132, 228, 50))
+        painter.setPen(QPen(QColor(53, 132, 228), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(screen_rect)
+        painter.end()
+
     def set_pixmap(self, px: QPixmap):
         self._pixmap_orig = px
         self._apply_fit()
@@ -235,12 +283,16 @@ class OCRCard(QWidget):
     A single OCR result card. Each rubber-band selection produces one card.
     Newest cards are inserted at the top of the panel's scroll area.
     """
-    word_clicked     = pyqtSignal(str, str)   # word, own raw_text (as sentence)
-    merge_requested  = pyqtSignal(object)     # emits self
-    dismiss_requested = pyqtSignal(object)    # emits self
+    word_clicked      = pyqtSignal(str, str)   # word, own raw_text (as sentence)
+    merge_requested   = pyqtSignal(object)     # emits self
+    dismiss_requested = pyqtSignal(object)     # emits self
+    jump_requested    = pyqtSignal(object)     # emits self
+    highlight_requested = pyqtSignal(object)   # emits self (on hover enter)
+    highlight_cleared   = pyqtSignal()         # on hover leave
 
     def __init__(self, raw_text: str, segmentation_on: bool,
-                 dict_popup, page_index: int = 0, parent=None):
+                 dict_popup, page_index: int = 0,
+                 source_rect: QRect | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("OCRCard")
         self.setStyleSheet(theme.CARD_STYLE)
@@ -250,6 +302,7 @@ class OCRCard(QWidget):
         self._last_hovered   = ""
         self._dict_popup     = dict_popup
         self._page_index     = page_index
+        self._source_rect    = source_rect
 
         # Use a plain layout — buttons float over the browser as an overlay
         outer = QVBoxLayout(self)
@@ -337,6 +390,20 @@ class OCRCard(QWidget):
             dismiss_btn.setText("✕")
         dismiss_btn.clicked.connect(lambda: self.dismiss_requested.emit(self))
         btn_lay.addWidget(dismiss_btn)
+
+        self._jump_btn = QPushButton()
+        self._jump_btn.setToolTip("Jump to source page")
+        self._jump_btn.setFixedSize(22, 18)
+        self._jump_btn.setStyleSheet(ocr_act_btn_style)
+        ic_jump = load_icon("jump")
+        if not ic_jump.isNull():
+            self._jump_btn.setIcon(ic_jump)
+            self._jump_btn.setIconSize(QSize(12, 12))
+        else:
+            self._jump_btn.setText("⤴")
+        self._jump_btn.clicked.connect(lambda: self.jump_requested.emit(self))
+        self._jump_btn.setVisible(False)
+        btn_lay.addWidget(self._jump_btn)
 
         # documentSizeChanged fires after layout is complete — reliable for initial size
         self.browser.document().documentLayout().documentSizeChanged.connect(
@@ -539,8 +606,29 @@ class OCRCard(QWidget):
     def page_index(self) -> int:
         return self._page_index
 
+    @property
+    def source_rect(self) -> QRect | None:
+        return self._source_rect
+
+    def update_jump_visible(self, visible_pages: set[int]):
+        """Show jump button only when this card's page is not currently visible."""
+        self._jump_btn.setVisible(self._page_index not in visible_pages)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self._source_rect:
+            self.highlight_requested.emit(self)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.highlight_cleared.emit()
+
 
 class OCRPanel(QWidget):
+    jump_to_page      = pyqtSignal(int, QRect)  # page_index, source_rect
+    highlight_on_page = pyqtSignal(int, QRect)  # page_index, source_rect
+    highlight_clear   = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setFixedWidth(280)
@@ -549,6 +637,7 @@ class OCRPanel(QWidget):
         self._app_settings    = None
         self._cards: list[OCRCard] = []
         self._current_page    = 0
+        self._visible_pages: set[int] = {0}
         self._filter_mode     = "page"  # "page" | "all"
 
         layout = QVBoxLayout(self)
@@ -654,25 +743,30 @@ class OCRPanel(QWidget):
         self._apply_filter()
 
     def _apply_filter(self):
-        """Show/hide cards based on filter mode and current page."""
+        """Show/hide cards based on filter mode and visible pages."""
         for card in self._cards:
             if self._filter_mode == "all":
                 card.setVisible(True)
             else:
-                card.setVisible(card.page_index == self._current_page)
+                card.setVisible(card.page_index in self._visible_pages)
         self._update_merge_buttons()
         self._update_page_count_label()
 
-    def set_current_page(self, page_index: int):
-        """Called by TakoReader when the page changes."""
+    def set_current_page(self, page_index: int, visible_pages: set | None = None):
+        """Called by TakoReader when the page changes.
+        visible_pages: set of page indices currently on screen (e.g. {4, 5} for a spread).
+        Falls back to {page_index} if not provided."""
         self._current_page = page_index
+        self._visible_pages = visible_pages or {page_index}
         if self._filter_mode == "page":
             self._apply_filter()
         self._update_page_count_label()
+        for card in self._cards:
+            card.update_jump_visible(self._visible_pages)
 
     def _update_page_count_label(self):
-        """Update the label showing how many results exist for this page."""
-        page_count = sum(1 for c in self._cards if c.page_index == self._current_page)
+        """Update the label showing how many results exist for visible pages."""
+        page_count = sum(1 for c in self._cards if c.page_index in self._visible_pages)
         total = len(self._cards)
         if total == 0:
             self._page_count_lbl.setText("")
@@ -695,13 +789,19 @@ class OCRPanel(QWidget):
 
     # ── Card management ───────────────────────────────────────────────────────
 
-    def _add_card(self, raw_text: str, page_index: int = 0):
+    def _add_card(self, raw_text: str, page_index: int = 0,
+                  source_rect: QRect | None = None):
         card = OCRCard(raw_text, self._segmentation_on,
                        self._dict_popup, page_index=page_index,
+                       source_rect=source_rect,
                        parent=self._card_container)
         card.word_clicked.connect(self._on_card_word_clicked)
         card.merge_requested.connect(self._on_merge_requested)
         card.dismiss_requested.connect(self._on_dismiss_requested)
+        card.jump_requested.connect(self._on_jump_requested)
+        card.highlight_requested.connect(self._on_highlight_requested)
+        card.highlight_cleared.connect(self._on_highlight_cleared)
+        card.update_jump_visible(self._visible_pages)
         self._card_lay.insertWidget(0, card)
         self._cards.insert(0, card)
         if self._filter_mode == "page" and card.page_index != self._current_page:
@@ -736,6 +836,20 @@ class OCRPanel(QWidget):
     def _on_dismiss_requested(self, card: OCRCard):
         self._remove_card(card)
 
+    def _on_jump_requested(self, card: OCRCard):
+        """Jump to the card's source page and flash the highlight."""
+        if card.source_rect:
+            self.jump_to_page.emit(card.page_index, card.source_rect)
+
+    def _on_highlight_requested(self, card: OCRCard):
+        """Highlight the card's source rect on the page (hover enter)."""
+        if card.source_rect and card.page_index in self._visible_pages:
+            self.highlight_on_page.emit(card.page_index, card.source_rect)
+
+    def _on_highlight_cleared(self):
+        """Clear highlight (hover leave)."""
+        self.highlight_clear.emit()
+
     def _remove_card(self, card: OCRCard):
         if card in self._cards:
             self._cards.remove(card)
@@ -761,10 +875,14 @@ class OCRPanel(QWidget):
         import json as _json
         entries = []
         for card in reversed(self._cards):
-            entries.append({
+            entry = {
                 "page": card.page_index,
                 "text": card.raw_text,
-            })
+            }
+            if card.source_rect:
+                r = card.source_rect
+                entry["rect"] = [r.x(), r.y(), r.width(), r.height()]
+            entries.append(entry)
         self._app_settings.setValue(f"ocr_results/{file_key}",
                                     _json.dumps(entries, ensure_ascii=False))
 
@@ -781,12 +899,19 @@ class OCRPanel(QWidget):
         except Exception:
             return
         for entry in entries:
-            self._add_card(entry["text"], page_index=entry.get("page", 0))
+            rect = None
+            if "rect" in entry:
+                r = entry["rect"]
+                rect = QRect(r[0], r[1], r[2], r[3])
+            self._add_card(entry["text"],
+                           page_index=entry.get("page", 0),
+                           source_rect=rect)
 
     # ── Public API (called by TakoReader) ─────────────────────────────────────
 
-    def set_text(self, text: str, page_index: int = 0):
-        self._add_card(text, page_index=page_index)
+    def set_text(self, text: str, page_index: int = 0,
+                 source_rect: QRect | None = None):
+        self._add_card(text, page_index=page_index, source_rect=source_rect)
         self.status.setText("\u2713 OCR complete")
 
     def set_ocr_state(self, state: str):

@@ -128,6 +128,9 @@ class TakoReader(QMainWindow):
         QApplication.instance().installEventFilter(self)
         # Pass settings to OCR panel so DictPopup has access to Anki config
         self.ocr_panel.set_settings(self._settings, main_window=self)
+        self.ocr_panel.jump_to_page.connect(self._on_ocr_jump)
+        self.ocr_panel.highlight_on_page.connect(self._on_ocr_highlight)
+        self.ocr_panel.highlight_clear.connect(self.page_view.clear_highlight)
         # Marquee overlay — parented to scroll so it covers only the page area
         self._marquee = MarqueeOverlay(self.scroll.viewport())
         self._marquee.hide()
@@ -1057,7 +1060,9 @@ class TakoReader(QMainWindow):
         self._save_session_page(index)
         if hasattr(self, "tb_bookmark_btn"):
             self._update_bookmark_btn()
-        self.ocr_panel.set_current_page(index)
+        self.ocr_panel.set_current_page(index, visible_pages=set(
+            self._spread_for_page(index) if self._spreads else (index,)
+        ))
         self._preload_pages(index)
 
     def prev_page(self):
@@ -1540,10 +1545,14 @@ class TakoReader(QMainWindow):
 
         # Determine which page the selection belongs to
         ocr_page = self._detect_ocr_page(rect)
+        # Store the source rect for highlighting (in combined-image coords for double page,
+        # but we need per-page coords — adjust for the page's position in the spread)
+        page_rect = self._to_page_local_rect(rect, ocr_page)
 
         self._ocr_worker = OCRWorker(image, rect, device=device)
         self._ocr_worker.result_ready.connect(
-            lambda text, p=ocr_page: self.ocr_panel.set_text(text, page_index=p)
+            lambda text, p=ocr_page, r=page_rect:
+                self.ocr_panel.set_text(text, page_index=p, source_rect=r)
         )
         self._ocr_worker.result_ready.connect(
             lambda _: self.ocr_panel.set_ocr_state("ready")
@@ -1582,6 +1591,80 @@ class TakoReader(QMainWindow):
         else:
             # LTR: left half = idx_a, right half = idx_b
             return idx_a if center_x < first_width_src else idx_b
+
+    def _to_page_local_rect(self, rect: QRect, page_idx: int) -> QRect:
+        """Convert a rect in combined-image coords to single-page-local coords.
+        In single-page mode, the rect is already page-local.
+        In double-page mode, subtract the offset of the page within the spread.
+        """
+        if self._page_mode != "double" or not self._spreads:
+            return QRect(rect)
+
+        spread = self._spread_for_page(self._current)
+        if len(spread) == 1:
+            return QRect(rect)
+
+        idx_a, idx_b = spread
+        if self._reading_mode == "rtl":
+            # RTL: left side is idx_b, right side is idx_a
+            if page_idx == idx_b:
+                return QRect(rect)  # left page — no offset
+            else:
+                # Right page — subtract left page width
+                offset = self._pages[idx_b].width()
+                return QRect(rect.x() - offset, rect.y(),
+                             rect.width(), rect.height())
+        else:
+            # LTR: left side is idx_a, right side is idx_b
+            if page_idx == idx_a:
+                return QRect(rect)  # left page — no offset
+            else:
+                offset = self._pages[idx_a].width()
+                return QRect(rect.x() - offset, rect.y(),
+                             rect.width(), rect.height())
+
+    def _to_display_rect(self, page_idx: int, page_rect: QRect) -> QRect | None:
+        """Convert a page-local source rect to combined-display source coords
+        for the current spread. Returns None if page is not in current spread.
+        """
+        if self._page_mode != "double" or not self._spreads:
+            # Single page — page_rect is already in display coords
+            return QRect(page_rect) if page_idx == self._current else None
+
+        spread = self._spread_for_page(self._current)
+        if page_idx not in spread:
+            return None
+        if len(spread) == 1:
+            return QRect(page_rect)
+
+        idx_a, idx_b = spread
+        if self._reading_mode == "rtl":
+            if page_idx == idx_b:
+                return QRect(page_rect)  # left side
+            else:
+                offset = self._pages[idx_b].width()
+                return QRect(page_rect.x() + offset, page_rect.y(),
+                             page_rect.width(), page_rect.height())
+        else:
+            if page_idx == idx_a:
+                return QRect(page_rect)  # left side
+            else:
+                offset = self._pages[idx_a].width()
+                return QRect(page_rect.x() + offset, page_rect.y(),
+                             page_rect.width(), page_rect.height())
+
+    def _on_ocr_jump(self, page_idx: int, page_rect: QRect):
+        """Jump to the page and flash the highlight for 1.5 seconds."""
+        self.go_to_page(page_idx)
+        display_rect = self._to_display_rect(page_idx, page_rect)
+        if display_rect:
+            self.page_view.set_highlight(display_rect, duration_ms=1500)
+
+    def _on_ocr_highlight(self, page_idx: int, page_rect: QRect):
+        """Show highlight while hovering a card (current page only)."""
+        display_rect = self._to_display_rect(page_idx, page_rect)
+        if display_rect:
+            self.page_view.set_highlight(display_rect)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Image capture via marquee
