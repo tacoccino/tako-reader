@@ -4,6 +4,8 @@ Tako Reader (タコReader) - Japanese Learning Edition
 Supports CBZ, PDF, and image files with Japanese OCR
 """
 
+VERSION = "1.0.0"
+
 import sys
 import json
 import subprocess
@@ -2020,12 +2022,14 @@ class TakoReader(QMainWindow):
 
         show_btn = QPushButton("Show in Finder" if platform.system() == "Darwin"
                                else "Show in Explorer")
+        show_btn.setStyleSheet(theme.BTN_MAIN)
         show_btn.clicked.connect(lambda: self._reveal_in_file_manager(self._current_file))
         btn_row.addWidget(show_btn)
 
         btn_row.addStretch()
 
         close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(theme.BTN_MAIN)
         close_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(close_btn)
 
@@ -2055,6 +2059,7 @@ class TakoReader(QMainWindow):
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(
             "<h2>Tako Reader — タコReader</h2>"
+            f"<p>Version {VERSION}</p>"
             "<p>A Japanese manga reader with built-in OCR, dictionary lookup, "
             "and Anki integration for language immersion.</p>"
             "<table cellspacing='4'>"
@@ -2160,6 +2165,7 @@ class TakoReader(QMainWindow):
         spin_timer.start(80)
 
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(theme.BTN_MAIN)
         cancel_btn.setFixedWidth(80)
         cancel_btn.clicked.connect(dlg.reject)
         btn_row = QHBoxLayout()

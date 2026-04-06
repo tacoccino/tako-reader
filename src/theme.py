@@ -101,7 +101,7 @@ THEMES: dict[str, dict] = {
     "bright": {
         "name":       "Bright",
         "icon_variant": "light",
-        "window_bg":  "#ffffff",
+        "window_bg":  "#f2f2f2",
         "toolbar_bg": "#f8f8f8",
         "panel_bg":   "#f2f2f2",
         "card_bg":    "#ffffff",
@@ -164,6 +164,7 @@ BG_PRESETS = [
     ("Dark Grey",      "#2d2d2d"),
     ("Warm Grey",      "#3a3530"),
     ("Mid Grey",       "#acacac"),
+    ("Light Grey",     "#dedede"),
     ("White",          "#ffffff"),
     ("Off-white",      "#f5f0e8"),
     ("Sepia",          "#f4ecd8"),
@@ -174,6 +175,7 @@ BG_PRESETS = [
 
 CARD_STYLE = ""
 BTN_SUBTLE = ""
+BTN_MAIN = ""
 APP_STYLESHEET = ""
 TOOLTIP_STYLESHEET = ""
 POPUP_STYLESHEET = ""
@@ -188,7 +190,7 @@ def _t(key: str) -> str:
 
 def _rebuild_styles():
     """Rebuild all module-level stylesheet strings from active theme + accent."""
-    global CARD_STYLE, BTN_SUBTLE, APP_STYLESHEET, TOOLTIP_STYLESHEET
+    global CARD_STYLE, BTN_SUBTLE, BTN_MAIN, APP_STYLESHEET, TOOLTIP_STYLESHEET
     global POPUP_STYLESHEET, SETTINGS_STYLESHEET, THUMBNAIL_SCROLLBAR_STYLESHEET
     a = ACCENT
 
@@ -213,6 +215,15 @@ def _rebuild_styles():
             border: none; font-size: 9pt; padding: 2px 4px;
         }}
         QPushButton:hover {{ color: {_t('text')}; background: {_t('hover_bg')}; border-radius: 3px; }}
+    """
+
+    BTN_MAIN = f"""
+        QPushButton {{
+            background: transparent; color: {_t('text')};
+            border: 1px solid {_t('border')}; border-radius: 6px;
+            padding: 6px 20px; font-size: 10pt; min-width: 80px;
+        }}
+        QPushButton:hover {{ background: {_t('hover_bg')}; }}
     """
 
     TOOLTIP_STYLESHEET = f"""
