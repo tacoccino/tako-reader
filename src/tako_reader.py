@@ -21,7 +21,7 @@ from PyQt6.QtCore import (
     QSettings, QTimer,
 )
 from PyQt6.QtGui import (
-    QPixmap, QImage, QAction,
+    QPixmap, QImage, QAction, QFont,
     QIcon, QPainter, QTransform,
 )
 
@@ -320,6 +320,9 @@ class TakoReader(QMainWindow):
         self._recent_menu = file_menu.addMenu("Open Recent")
         self._rebuild_recent_menu()
         file_menu.addSeparator()
+        file_info_act = QAction("File Info…", self)
+        file_info_act.triggered.connect(self._show_file_info)
+        file_menu.addAction(file_info_act)
         file_menu.addAction(close_act)
 
         view_menu = mb.addMenu("View")
@@ -1819,6 +1822,143 @@ class TakoReader(QMainWindow):
         self.scroll.viewport().unsetCursor()
         self.page_view._update_cursor()  # restores arrow/crosshair based on OCR mode
         self._cursor_hidden = False
+
+    def _show_file_info(self):
+        """Show a dialog with details about the currently open file."""
+        if not self._current_file:
+            QMessageBox.information(self, "File Info", "No file is currently open.")
+            return
+
+        import os
+        from PyQt6.QtWidgets import QDialog, QGridLayout
+
+        p = Path(self._current_file)
+
+        # Gather info
+        file_name = p.name
+        file_path = str(p.parent)
+        try:
+            size_bytes = p.stat().st_size
+            if size_bytes >= 1_073_741_824:
+                file_size = f"{size_bytes / 1_073_741_824:.1f} GB"
+            elif size_bytes >= 1_048_576:
+                file_size = f"{size_bytes / 1_048_576:.1f} MB"
+            elif size_bytes >= 1024:
+                file_size = f"{size_bytes / 1024:.1f} KB"
+            else:
+                file_size = f"{size_bytes} bytes"
+        except Exception:
+            file_size = "Unknown"
+
+        ext = p.suffix.lower()
+        format_names = {
+            ".cbz": "Comic Book ZIP (CBZ)",
+            ".cbr": "Comic Book RAR (CBR)",
+            ".cb7": "Comic Book 7-Zip (CB7)",
+            ".cbt": "Comic Book TAR (CBT)",
+            ".zip": "ZIP Archive",
+            ".rar": "RAR Archive",
+            ".7z":  "7-Zip Archive",
+            ".tar": "TAR Archive",
+            ".pdf": "PDF Document",
+            ".jpg": "JPEG Image", ".jpeg": "JPEG Image",
+            ".png": "PNG Image",
+            ".webp": "WebP Image",
+            ".bmp": "BMP Image",
+        }
+        file_format = format_names.get(ext, ext.upper().lstrip(".") if ext else "Folder")
+
+        page_count = len(self._pages)
+        current_pg = self._current + 1
+
+        # Current page dimensions
+        if self._pages:
+            px = self._pages[self._current]
+            dimensions = f"{px.width()} × {px.height()}"
+        else:
+            dimensions = "—"
+
+        # Build dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("File Info")
+        dlg.setMinimumWidth(420)
+        dlg.setModal(True)
+        dlg.setStyleSheet(
+            f"QDialog {{ background: {theme._active['window_bg']}; color: {theme._active['text']}; }}"
+            f" QLabel {{ color: {theme._active['text']}; }}"
+        )
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
+
+        # Title
+        title = QLabel(file_name)
+        title.setFont(QFont("", 14, QFont.Weight.Bold))
+        title.setWordWrap(True)
+        title.setStyleSheet(f"color: {theme._active['text']};")
+        root.addWidget(title)
+
+        # Info grid
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        grid.setColumnMinimumWidth(0, 100)
+
+        fields = [
+            ("Format",       file_format),
+            ("Size",         file_size),
+            ("Pages",        str(page_count)),
+            ("Current Page", f"{current_pg} / {page_count}"),
+            ("Page Size",    f"{dimensions} px"),
+            ("Location",     file_path),
+        ]
+
+        for row, (label, value) in enumerate(fields):
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            grid.addWidget(lbl, row, 0)
+
+            val = QLabel(value)
+            val.setStyleSheet(f"color: {theme._active['text']}; font-size: 10pt;")
+            val.setWordWrap(True)
+            val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(val, row, 1)
+
+        root.addLayout(grid)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        show_btn = QPushButton("Show in Finder" if platform.system() == "Darwin"
+                               else "Show in Explorer")
+        show_btn.clicked.connect(lambda: self._reveal_in_file_manager(self._current_file))
+        btn_row.addWidget(show_btn)
+
+        btn_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+
+        root.addLayout(btn_row)
+        dlg.exec()
+
+    def _reveal_in_file_manager(self, path: str):
+        """Open the system file manager with the file selected."""
+        import subprocess
+        p = Path(path)
+        try:
+            if platform.system() == "Darwin":
+                subprocess.Popen(["open", "-R", str(p)])
+            elif platform.system() == "Windows":
+                subprocess.Popen(["explorer", "/select,", str(p)])
+            else:
+                # Linux — open the containing folder
+                subprocess.Popen(["xdg-open", str(p.parent)])
+        except Exception as e:
+            self._toast(f"Could not open file manager: {e}")
 
     def _show_about(self):
         from PyQt6.QtWidgets import QMessageBox
