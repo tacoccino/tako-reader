@@ -3,6 +3,7 @@ Tako Reader — file format loaders.
 CBZ/ZIP, CBR/RAR, CB7/7z, CBT/TAR, PDF, images, and directories.
 """
 
+import re
 import zipfile
 import tarfile
 from pathlib import Path
@@ -11,6 +12,13 @@ from PyQt6.QtGui import QPixmap, QImage
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".avif"}
+
+
+def _nat_key(s: str):
+    """Natural sort key — splits a string into text and numeric chunks
+    so that 'page2' sorts before 'page10'."""
+    return [int(c) if c.isdigit() else c.lower()
+            for c in re.split(r'(\d+)', s)]
 
 
 def _is_image_name(name: str) -> bool:
@@ -40,7 +48,7 @@ def load_pages_from_path(path: str) -> list[QPixmap]:
 def _load_cbz(path: str) -> list[QPixmap]:
     pages = []
     with zipfile.ZipFile(path, "r") as zf:
-        names = sorted(n for n in zf.namelist() if _is_image_name(n))
+        names = sorted((n for n in zf.namelist() if _is_image_name(n)), key=_nat_key)
         for name in names:
             img = QImage()
             img.loadFromData(zf.read(name))
@@ -108,7 +116,7 @@ def _load_cbr(path: str) -> list[QPixmap]:
 
         # Load all extracted images (recursive — archives may have subdirs)
         pages = []
-        for f in sorted(Path(tmpdir).rglob("*")):
+        for f in sorted(Path(tmpdir).rglob("*"), key=lambda p: _nat_key(str(p))):
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS and not f.name.startswith("._"):
                 px = QPixmap(str(f))
                 if not px.isNull():
@@ -129,7 +137,7 @@ def _load_cb7(path: str) -> list[QPixmap]:
     pages = []
     with py7zr.SevenZipFile(path, "r") as zf:
         all_files = zf.readall()
-        names = sorted(n for n in all_files.keys() if _is_image_name(n))
+        names = sorted((n for n in all_files.keys() if _is_image_name(n)), key=_nat_key)
         for name in names:
             data = all_files[name].read()
             img = QImage()
@@ -147,7 +155,7 @@ def _load_cbt(path: str) -> list[QPixmap]:
         members = sorted(
             [m for m in tf.getmembers()
              if m.isfile() and _is_image_name(m.name)],
-            key=lambda m: m.name
+            key=lambda m: _nat_key(m.name)
         )
         for member in members:
             f = tf.extractfile(member)
@@ -183,7 +191,7 @@ def _load_pdf(path: str) -> list[QPixmap]:
 
 def _load_dir(path: str) -> list[QPixmap]:
     pages = []
-    for f in sorted(Path(path).iterdir()):
+    for f in sorted(Path(path).iterdir(), key=lambda p: _nat_key(p.name)):
         if f.suffix.lower() in IMAGE_EXTS:
             px = QPixmap(str(f))
             if not px.isNull():
