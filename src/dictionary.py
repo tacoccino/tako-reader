@@ -27,6 +27,14 @@ from anki import (
 
 # ─── Dictionary lookup ──────────────────────────────────────────────────────
 
+def _parse_jlpt(jlpt_list: list) -> str:
+    """Extract JLPT level from Jisho's jlpt field, e.g. ['jlpt-n3'] → 'N3'."""
+    for tag in jlpt_list:
+        if tag.startswith("jlpt-n"):
+            return "N" + tag[-1]
+    return ""
+
+
 def lookup_word(word: str) -> list[dict]:
     """
     Look up a word using jamdict (offline).
@@ -83,6 +91,8 @@ def lookup_word(word: str) -> list[dict]:
                 "readings": readings,
                 "senses":   senses,
                 "kanji":    kanji_info,
+                "jlpt":     "",
+                "common":   False,
             })
         return entries
     except Exception:
@@ -134,6 +144,8 @@ def lookup_jisho(word: str) -> list[dict]:
                 "senses":   senses,
                 "kanji":    [],  # Jisho API doesn't return kanji breakdown
                 "source":   "jisho",
+                "jlpt":     _parse_jlpt(item.get("jlpt", [])),
+                "common":   item.get("is_common", False),
             })
         return entries
     except Exception:
@@ -324,6 +336,25 @@ class DictPopup(QWidget):
             word_lbl.setStyleSheet(f"color: {theme._active['text']}; border: none; background: transparent;")
             word_lbl.setWordWrap(True)
             header_row.addWidget(word_lbl, stretch=1)
+
+            # JLPT / common badges
+            jlpt = entry.get("jlpt", "")
+            common = entry.get("common", False)
+            if jlpt or common:
+                badge_style = (
+                    f"color: {theme._active['text_muted']};"
+                    f" border: 1px solid {theme._active['border_light']};"
+                    f" border-radius: 4px; padding: 2px 8px;"
+                    f" font-size: 8pt; background: transparent;"
+                )
+                if jlpt:
+                    jlpt_lbl = QLabel(jlpt)
+                    jlpt_lbl.setStyleSheet(badge_style)
+                    header_row.addWidget(jlpt_lbl, alignment=Qt.AlignmentFlag.AlignTop)
+                if common:
+                    common_lbl = QLabel("common")
+                    common_lbl.setStyleSheet(badge_style)
+                    header_row.addWidget(common_lbl, alignment=Qt.AlignmentFlag.AlignTop)
 
             anki_btn = QPushButton("+ Anki")
             anki_btn.setStyleSheet(anki_btn_style)
