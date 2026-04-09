@@ -359,6 +359,24 @@ class SettingsDialog(QDialog):
                   hint="Root folder containing your manga and comic files. "
                        "The library browser will scan this folder recursively.")
 
+        # Thumbnail cache
+        cache_row = QHBoxLayout()
+        self._cache_size_label = QLabel("")
+        self._cache_size_label.setStyleSheet(
+            f"color: {theme._active['text_muted']}; font-size: 9pt;"
+        )
+        cache_row.addWidget(self._cache_size_label, stretch=1)
+        clear_cache_btn = QPushButton("Clear Cache")
+        clear_cache_btn.setFixedWidth(90)
+        clear_cache_btn.clicked.connect(self._clear_thumb_cache)
+        cache_row.addWidget(clear_cache_btn)
+        cache_container = QWidget()
+        cache_container.setLayout(cache_row)
+        self._row(lib_lay, "Thumb Cache", cache_container,
+                  hint="Cached cover thumbnails for the library browser. "
+                       "Clearing forces thumbnails to regenerate next time.")
+        self._update_cache_size_label()
+
         # Reading
         read_lay = self._section("Reading")
         self.default_reading_combo = QComboBox()
@@ -473,6 +491,23 @@ class SettingsDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Choose Library Folder", current)
         if path:
             self.library_path.setText(path)
+
+    def _clear_thumb_cache(self):
+        from library import clear_cache
+        clear_cache()
+        self._update_cache_size_label()
+
+    def _update_cache_size_label(self):
+        from library import get_cache_size_bytes
+        size = get_cache_size_bytes()
+        if size >= 1_048_576:
+            self._cache_size_label.setText(f"{size / 1_048_576:.1f} MB")
+        elif size >= 1024:
+            self._cache_size_label.setText(f"{size / 1024:.1f} KB")
+        elif size > 0:
+            self._cache_size_label.setText(f"{size} bytes")
+        else:
+            self._cache_size_label.setText("Empty")
 
     # ── OCR section ───────────────────────────────────────────────────────────
 
