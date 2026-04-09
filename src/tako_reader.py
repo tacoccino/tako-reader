@@ -40,6 +40,7 @@ from widgets import (
     MarqueeOverlay, ThumbnailList,
 )
 from settings import SettingsDialog
+from library import LibraryDialog
 
 
 # ─── Main Window ─────────────────────────────────────────────────────────────
@@ -319,6 +320,10 @@ class TakoReader(QMainWindow):
         close_act = _act("close_file", "Close", self.close_file)
         file_menu.addActions([open_act, open_dir])
         file_menu.addSeparator()
+        library_act = QAction("Library…", self)
+        library_act.triggered.connect(self._open_library)
+        file_menu.addAction(library_act)
+        file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Open Recent")
         self._rebuild_recent_menu()
         file_menu.addSeparator()
@@ -463,6 +468,8 @@ class TakoReader(QMainWindow):
         # ── Centre tools ──
         lay.addWidget(_btn("📂 Open", self.open_file,
                            icon_name="open", tooltip=f"Open file ({_ctrl()}+O)"))
+        lay.addWidget(_btn("📚", self._open_library,
+                           icon_name="library", tooltip="Library"))
         lay.addWidget(_sep())
         lay.addWidget(_btn("↔ Fit Width",
                            lambda: self.page_view.set_fit_mode("fit_width"),
@@ -730,6 +737,10 @@ class TakoReader(QMainWindow):
         path     = QFileDialog.getExistingDirectory(self, "Open Manga Folder", last_dir)
         if path:
             self._load_path(path)
+
+    def _open_library(self):
+        dlg = LibraryDialog(self._settings, self._load_path, parent=self)
+        dlg.exec()
 
     def _load_path(self, path: str):
         prog = QProgressDialog("Loading pages…", None, 0, 0, self)

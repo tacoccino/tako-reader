@@ -342,6 +342,23 @@ class SettingsDialog(QDialog):
         self._row(lay, "Keep Screen Awake", self.keep_awake_check,
                   hint="Prevent the screen from sleeping while a file is open.")
 
+        # Library
+        lib_lay = self._section("Library")
+        lib_row = QHBoxLayout()
+        self.library_path = QLineEdit()
+        self.library_path.setPlaceholderText("No folder selected")
+        self.library_path.setReadOnly(True)
+        lib_row.addWidget(self.library_path, stretch=1)
+        lib_browse = QPushButton("Browse…")
+        lib_browse.setFixedWidth(70)
+        lib_browse.clicked.connect(self._pick_library_folder)
+        lib_row.addWidget(lib_browse)
+        lib_container = QWidget()
+        lib_container.setLayout(lib_row)
+        self._row(lib_lay, "Library Folder", lib_container,
+                  hint="Root folder containing your manga and comic files. "
+                       "The library browser will scan this folder recursively.")
+
         # Reading
         read_lay = self._section("Reading")
         self.default_reading_combo = QComboBox()
@@ -450,6 +467,12 @@ class SettingsDialog(QDialog):
         colour = QColorDialog.getColor(QColor(current), self, "Choose Accent Colour")
         if colour.isValid():
             self._select_accent(colour.name())
+
+    def _pick_library_folder(self):
+        current = self.library_path.text() or ""
+        path = QFileDialog.getExistingDirectory(self, "Choose Library Folder", current)
+        if path:
+            self.library_path.setText(path)
 
     # ── OCR section ───────────────────────────────────────────────────────────
 
@@ -704,6 +727,8 @@ class SettingsDialog(QDialog):
         self.preload_spin.setValue(self.app_settings.value("general/preload_count", 2, type=int))
         self.keep_awake_check.setChecked(
             self.app_settings.value("general/keep_awake", True, type=bool))
+        self.library_path.setText(
+            self.app_settings.value("library/path", ""))
         self.auto_spread_check.setChecked(
             self.app_settings.value("view/auto_spread", True, type=bool))
         saved_reading_dir = self.app_settings.value("view/default_reading_mode", "rtl")
@@ -772,6 +797,7 @@ class SettingsDialog(QDialog):
         self.app_settings.setValue("general/preload",       self.preload_check.isChecked())
         self.app_settings.setValue("general/preload_count", self.preload_spin.value())
         self.app_settings.setValue("general/keep_awake",    self.keep_awake_check.isChecked())
+        self.app_settings.setValue("library/path",          self.library_path.text().strip())
         self.app_settings.setValue("view/auto_spread",      self.auto_spread_check.isChecked())
         self.app_settings.setValue("view/default_reading_mode",
                                    self.default_reading_combo.currentData())
