@@ -1924,12 +1924,13 @@ class TakoReader(QMainWindow):
             QMessageBox.critical(self, "Export Error", str(e))
 
     def _show_file_info(self):
-        """Show a dialog with details about the currently open file."""
+        """Show a dialog with details about the currently open file + editable metadata."""
         if not self._current_file:
             QMessageBox.information(self, "File Info", "No file is currently open.")
             return
 
         import os
+        import json as _json
         from PyQt6.QtWidgets import QDialog, QGridLayout
 
         p = Path(self._current_file)
@@ -1971,21 +1972,40 @@ class TakoReader(QMainWindow):
         page_count = len(self._pages)
         current_pg = self._current + 1
 
-        # Current page dimensions
         if self._pages:
             px = self._pages[self._current]
             dimensions = f"{px.width()} × {px.height()}"
         else:
             dimensions = "—"
 
+        # Load existing metadata
+        import hashlib
+        meta_hash = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+        meta_key = f"metadata/{meta_hash}"
+        raw_meta = self._settings.value(meta_key, "{}")
+        try:
+            meta = _json.loads(raw_meta)
+        except Exception:
+            meta = {}
+
         # Build dialog
         dlg = QDialog(self)
         dlg.setWindowTitle("File Info")
         dlg.setMinimumWidth(420)
         dlg.setModal(True)
+
+        label_style = f"color: {theme._active['text_muted']}; font-size: 9pt;"
+        value_style = f"color: {theme._active['text']}; font-size: 10pt;"
+        input_style = (
+            f"background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border_light']}; border-radius: 4px;"
+            f" padding: 3px 6px; font-size: 10pt;"
+        )
+
         dlg.setStyleSheet(
             f"QDialog {{ background: {theme._active['window_bg']}; color: {theme._active['text']}; }}"
             f" QLabel {{ color: {theme._active['text']}; }}"
+            f" QLineEdit {{ {input_style} }}"
         )
 
         root = QVBoxLayout(dlg)
@@ -1999,12 +2019,12 @@ class TakoReader(QMainWindow):
         title.setStyleSheet(f"color: {theme._active['text']};")
         root.addWidget(title)
 
-        # Info grid
+        # ── File info grid (read-only) ──
         grid = QGridLayout()
         grid.setSpacing(8)
         grid.setColumnMinimumWidth(0, 100)
 
-        fields = [
+        info_fields = [
             ("Format",       file_format),
             ("Size",         file_size),
             ("Pages",        str(page_count)),
@@ -2013,21 +2033,95 @@ class TakoReader(QMainWindow):
             ("Location",     file_path),
         ]
 
-        for row, (label, value) in enumerate(fields):
+        for row, (label, value) in enumerate(info_fields):
             lbl = QLabel(label)
-            lbl.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 9pt;")
+            lbl.setStyleSheet(label_style)
             lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             grid.addWidget(lbl, row, 0)
 
             val = QLabel(value)
-            val.setStyleSheet(f"color: {theme._active['text']}; font-size: 10pt;")
+            val.setStyleSheet(value_style)
             val.setWordWrap(True)
             val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             grid.addWidget(val, row, 1)
 
         root.addLayout(grid)
 
-        # Buttons
+        # ── Separator ──
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(
+            f"color: {theme._active['border_light']};"
+            f" background: {theme._active['border_light']};"
+            f" border: none; max-height: 1px;"
+        )
+        root.addWidget(sep)
+
+        # ── Metadata heading ──
+        meta_heading = QLabel("Metadata")
+        meta_heading.setFont(QFont("", 11, QFont.Weight.Bold))
+        meta_heading.setStyleSheet(f"color: {theme._active['text']};")
+        root.addWidget(meta_heading)
+
+        # ── Metadata grid (editable) ──
+        meta_grid = QGridLayout()
+        meta_grid.setSpacing(8)
+        meta_grid.setColumnMinimumWidth(0, 100)
+
+        meta_fields = [
+            ("title_jp",  "Title (JP)"),
+            ("title_en",  "Title (EN)"),
+            ("volume",     "Volume"),
+            ("author",     "Author"),
+            ("artist",     "Artist"),
+            ("circle",     "Circle"),
+            ("publisher",  "Publisher"),
+            ("year",       "Year"),
+            ("language",   "Language"),
+            ("tags",       "Tags"),
+            ("notes",      "Notes"),
+        ]
+
+        meta_edits = {}
+        for row, (key, label) in enumerate(meta_fields):
+            lbl = QLabel(label)
+            lbl.setStyleSheet(label_style)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            meta_grid.addWidget(lbl, row, 0)
+
+            edit = QLineEdit()
+            edit.setText(meta.get(key, ""))
+            if key == "tags":
+                edit.setPlaceholderText("comma-separated")
+            meta_edits[key] = edit
+            meta_grid.addWidget(edit, row, 1)
+
+        # Content rating (combobox, separate from the text fields)
+        rating_row = len(meta_fields)
+        rating_lbl = QLabel("Rating")
+        rating_lbl.setStyleSheet(label_style)
+        rating_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        meta_grid.addWidget(rating_lbl, rating_row, 0)
+
+        from PyQt6.QtWidgets import QComboBox
+        rating_combo = QComboBox()
+        rating_combo.addItems(["—", "SFW", "Suggestive", "NSFW"])
+        saved_rating = meta.get("rating", "—")
+        idx = rating_combo.findText(saved_rating)
+        if idx >= 0:
+            rating_combo.setCurrentIndex(idx)
+        rating_combo.setStyleSheet(
+            f"QComboBox {{"
+            f" background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border_light']}; border-radius: 4px;"
+            f" padding: 3px 6px; font-size: 10pt;"
+            f"}}"
+        )
+        meta_grid.addWidget(rating_combo, rating_row, 1)
+
+        root.addLayout(meta_grid)
+
+        # ── Buttons ──
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
@@ -2038,6 +2132,22 @@ class TakoReader(QMainWindow):
         btn_row.addWidget(show_btn)
 
         btn_row.addStretch()
+
+        save_btn = QPushButton("Save")
+        save_btn.setStyleSheet(theme.BTN_MAIN)
+        def _save_meta():
+            data = {}
+            for key, edit in meta_edits.items():
+                val = edit.text().strip()
+                if val:
+                    data[key] = val
+            rating = rating_combo.currentText()
+            if rating != "—":
+                data["rating"] = rating
+            self._settings.setValue(meta_key, _json.dumps(data, ensure_ascii=False))
+            dlg.accept()
+        save_btn.clicked.connect(_save_meta)
+        btn_row.addWidget(save_btn)
 
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet(theme.BTN_MAIN)

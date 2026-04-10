@@ -449,6 +449,13 @@ class LibraryDialog(QDialog):
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self._status)
 
+        # ── Set folder button (shown only when no library is configured) ──
+        self._set_folder_btn = QPushButton("Set Library Folder…")
+        self._set_folder_btn.setStyleSheet(theme.BTN_MAIN)
+        self._set_folder_btn.clicked.connect(self._pick_folder)
+        self._set_folder_btn.setVisible(False)
+        root.addWidget(self._set_folder_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
         # ── Bottom buttons ──
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
@@ -517,10 +524,12 @@ class LibraryDialog(QDialog):
         self._item_map = {}
 
         if not lib_path or not Path(lib_path).is_dir():
-            self._status.setText("No library folder set. Configure one in Settings → Library.")
+            self._status.setText("No library folder set.")
             self._search.setEnabled(False)
+            self._set_folder_btn.setVisible(True)
             return
 
+        self._set_folder_btn.setVisible(False)
         self._search.setEnabled(True)
         self._status.setText("Scanning…")
         QApplication.processEvents()
@@ -595,6 +604,15 @@ class LibraryDialog(QDialog):
                     item.setIcon(QIcon(px))
 
     # ── Actions ──────────────────────────────────────────────────────────────
+
+    def _pick_folder(self):
+        current = self.app_settings.value("library/path", "")
+        path = QFileDialog.getExistingDirectory(
+            self, "Choose Library Folder", current
+        )
+        if path:
+            self.app_settings.setValue("library/path", path)
+            self._load_library()
 
     def _open_selected(self):
         item = self._list.currentItem()
