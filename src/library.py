@@ -1,21 +1,23 @@
 """
 Tako Reader — library browser.
 Scans a user-configured folder for manga/comic files and lists them
-with thumbnail previews in list or grid view.
+with thumbnail previews, metadata-aware display, grouping, and filtering.
 """
 
 import re
 import os
 import hashlib
+import json as _json
 import zipfile
 import tarfile
 import shutil
 from pathlib import Path
+from collections import defaultdict
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
-    QWidget, QApplication, QAbstractItemView,
+    QWidget, QApplication, QComboBox,
 )
 from PyQt6.QtCore import (
     Qt, QSettings, QSize, QThread, pyqtSignal, QStandardPaths,
@@ -38,6 +40,8 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".avif"
 THUMB_W, THUMB_H = 120, 160
 LIST_ICON_W, LIST_ICON_H = 50, 70
 
+RATING_FILTERS = ["Show All", "Hide NSFW", "SFW Only", "NSFW Only"]
+
 
 def _nat_key(s: str):
     """Natural sort key."""
@@ -49,6 +53,32 @@ def _is_image_name(name: str) -> bool:
     return (Path(name).suffix.lower() in IMAGE_EXTS
             and not name.startswith("__")
             and not name.startswith("._"))
+
+
+# ─── Metadata helpers ─────────────────────────────────────────────────────────
+
+def _meta_key_for_path(file_path: str) -> str:
+    h = hashlib.md5(file_path.encode()).hexdigest()[:12]
+    return f"metadata/{h}"
+
+
+def _load_meta(settings: QSettings, file_path: str) -> dict:
+    raw = settings.value(_meta_key_for_path(file_path), "{}")
+    try:
+        return _json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _display_title(entry: dict, meta: dict) -> str:
+    """Build a display title from metadata, falling back to filename."""
+    title = meta.get("title_jp") or meta.get("title_en") or ""
+    vol = meta.get("volume", "")
+    if title:
+        if vol:
+            return f"{title} — Vol {vol}"
+        return title
+    return entry["name"]
 
 
 # ─── Thumbnail cache ─────────────────────────────────────────────────────────
@@ -63,7 +93,6 @@ def _thumb_cache_dir() -> Path:
 
 
 def _thumb_key(file_path: str) -> str:
-    """Cache key: MD5 of path + mtime."""
     try:
         mtime = str(os.path.getmtime(file_path))
     except Exception:
@@ -77,7 +106,6 @@ def _cached_thumb_path(file_path: str) -> Path:
 
 
 def get_cache_size_bytes() -> int:
-    """Return total size of cached thumbnails in bytes."""
     d = _thumb_cache_dir()
     if not d.exists():
         return 0
@@ -85,7 +113,6 @@ def get_cache_size_bytes() -> int:
 
 
 def clear_cache():
-    """Delete all cached thumbnails."""
     d = _thumb_cache_dir()
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
@@ -95,10 +122,8 @@ def clear_cache():
 # ─── First-page extraction ───────────────────────────────────────────────────
 
 def _extract_first_page(file_path: str) -> QPixmap | None:
-    """Extract the first page from a manga file and return as QPixmap."""
     p = Path(file_path)
     ext = p.suffix.lower()
-
     try:
         if ext in (".cbz", ".zip"):
             return _first_page_cbz(file_path)
@@ -237,7 +262,6 @@ def _first_page_dir(path: str) -> QPixmap | None:
 # ─── Library scanner ─────────────────────────────────────────────────────────
 
 def _scan_library(root: Path) -> list[dict]:
-    """Scan a directory tree for supported manga/comic files."""
     results = []
     if not root.is_dir():
         return results
@@ -252,7 +276,6 @@ def _scan_library(root: Path) -> list[dict]:
                 "ext": p.suffix.lower(),
             })
 
-    # Image directories
     for d in sorted(root.rglob("*"), key=lambda x: _nat_key(str(x))):
         if not d.is_dir():
             continue
@@ -281,8 +304,7 @@ def _scan_library(root: Path) -> list[dict]:
 # ─── Thumbnail worker ────────────────────────────────────────────────────────
 
 class ThumbnailWorker(QThread):
-    """Generate thumbnails in the background, emitting each as it's ready."""
-    thumbnail_ready = pyqtSignal(str, QPixmap)  # (file_path, thumb_pixmap)
+    thumbnail_ready = pyqtSignal(str, QPixmap)
     finished_all    = pyqtSignal()
 
     def __init__(self, entries: list[dict]):
@@ -300,14 +322,12 @@ class ThumbnailWorker(QThread):
             file_path = entry["path"]
             cached = _cached_thumb_path(file_path)
 
-            # Check cache
             if cached.exists():
                 px = QPixmap(str(cached))
                 if not px.isNull():
                     self.thumbnail_ready.emit(file_path, px)
                     continue
 
-            # Generate
             full_px = _extract_first_page(file_path)
             if full_px and not full_px.isNull():
                 thumb = full_px.scaled(
@@ -315,7 +335,6 @@ class ThumbnailWorker(QThread):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-                # Save to cache
                 try:
                     thumb.save(str(cached), "JPEG", 85)
                 except Exception:
@@ -328,10 +347,6 @@ class ThumbnailWorker(QThread):
 # ─── Library dialog ──────────────────────────────────────────────────────────
 
 class LibraryDialog(QDialog):
-    """
-    Library browser dialog. Lists all manga/comic files found in the
-    user's configured library folder with thumbnail previews.
-    """
 
     def __init__(self, app_settings: QSettings, open_callback, parent=None):
         super().__init__(parent)
@@ -341,9 +356,12 @@ class LibraryDialog(QDialog):
         self.app_settings = app_settings
         self._open_callback = open_callback
         self._entries: list[dict] = []
+        self._meta_cache: dict[str, dict] = {}  # path -> metadata dict
         self._thumb_worker: ThumbnailWorker | None = None
         self._view_mode = app_settings.value("library/view_mode", "list")
-        self._item_map: dict[str, QListWidgetItem] = {}  # path -> item
+        self._rating_filter_idx = 0  # index into RATING_FILTERS
+        self._item_map: dict[str, QListWidgetItem] = {}
+        self._group_items: list[QListWidgetItem] = []  # group header items
 
         self.setStyleSheet(
             f"QDialog {{ background: {theme._active['window_bg']};"
@@ -375,6 +393,28 @@ class LibraryDialog(QDialog):
         title.setStyleSheet(f"color: {theme._active['text']};")
         header.addWidget(title, stretch=1)
 
+        # Rating filter
+        self._rating_btn = QPushButton("Show All")
+        self._rating_btn.setStyleSheet(theme.BTN_MAIN)
+        self._rating_btn.setFixedWidth(90)
+        self._rating_btn.clicked.connect(self._cycle_rating_filter)
+        header.addWidget(self._rating_btn)
+
+        # Sort
+        self._sort_combo = QComboBox()
+        self._sort_combo.addItems(["Title", "Filename", "Author", "Year"])
+        self._sort_combo.setStyleSheet(
+            f"QComboBox {{"
+            f" background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border']}; border-radius: 6px;"
+            f" padding: 4px 8px; font-size: 9pt;"
+            f"}}"
+        )
+        self._sort_combo.setFixedWidth(90)
+        self._sort_combo.currentIndexChanged.connect(lambda: self._refresh_display())
+        header.addWidget(self._sort_combo)
+
+        # Refresh
         self._refresh_btn = QPushButton()
         self._refresh_btn.setFixedSize(30, 30)
         self._refresh_btn.setStyleSheet(icon_btn_style)
@@ -405,7 +445,7 @@ class LibraryDialog(QDialog):
             f" border-radius: 6px; padding: 6px 10px; font-size: 10pt;"
             f"}}"
         )
-        self._search.textChanged.connect(self._filter_list)
+        self._search.textChanged.connect(lambda: self._refresh_display())
         search_row.addWidget(self._search, stretch=1)
 
         self._view_btn = QPushButton()
@@ -476,14 +516,11 @@ class LibraryDialog(QDialog):
     # ── View mode ────────────────────────────────────────────────────────────
 
     def _toggle_view(self):
-        if self._view_mode == "list":
-            self._view_mode = "grid"
-        else:
-            self._view_mode = "list"
+        self._view_mode = "grid" if self._view_mode == "list" else "list"
         self.app_settings.setValue("library/view_mode", self._view_mode)
         self._update_view_btn_icon()
         self._apply_view_mode()
-        self._filter_list(self._search.text())
+        self._refresh_display()
 
     def _update_view_btn_icon(self):
         icon_name = "view-list" if self._view_mode == "grid" else "view-grid"
@@ -511,6 +548,26 @@ class LibraryDialog(QDialog):
             self._list.setFlow(QListWidget.Flow.TopToBottom)
             self._list.setWrapping(False)
 
+    # ── Rating filter ────────────────────────────────────────────────────────
+
+    def _cycle_rating_filter(self):
+        self._rating_filter_idx = (self._rating_filter_idx + 1) % len(RATING_FILTERS)
+        self._rating_btn.setText(RATING_FILTERS[self._rating_filter_idx])
+        self._refresh_display()
+
+    def _passes_rating_filter(self, meta: dict) -> bool:
+        mode = RATING_FILTERS[self._rating_filter_idx]
+        rating = meta.get("rating", "")
+        if mode == "Show All":
+            return True
+        elif mode == "Hide NSFW":
+            return rating != "NSFW"
+        elif mode == "SFW Only":
+            return rating == "SFW" or rating == ""
+        elif mode == "NSFW Only":
+            return rating == "NSFW"
+        return True
+
     # ── Library loading ──────────────────────────────────────────────────────
 
     def _load_library(self):
@@ -521,7 +578,9 @@ class LibraryDialog(QDialog):
         lib_path = self.app_settings.value("library/path", "")
         self._list.clear()
         self._entries = []
+        self._meta_cache = {}
         self._item_map = {}
+        self._group_items = []
 
         if not lib_path or not Path(lib_path).is_dir():
             self._status.setText("No library folder set.")
@@ -535,41 +594,182 @@ class LibraryDialog(QDialog):
         QApplication.processEvents()
 
         self._entries = _scan_library(Path(lib_path))
-        self._populate_list(self._entries)
 
-        count = len(self._entries)
-        self._status.setText(
-            f"{count} item{'s' if count != 1 else ''} found"
-            if count else "No manga or comic files found in this folder."
-        )
+        # Pre-load all metadata
+        for entry in self._entries:
+            self._meta_cache[entry["path"]] = _load_meta(
+                self.app_settings, entry["path"]
+            )
 
+        self._refresh_display()
+
+        # Start thumbnail generation
         if self._entries:
             self._thumb_worker = ThumbnailWorker(self._entries)
             self._thumb_worker.thumbnail_ready.connect(self._on_thumb_ready)
             self._thumb_worker.start()
 
-    def _populate_list(self, entries: list[dict]):
+    # ── Display refresh ──────────────────────────────────────────────────────
+
+    def _refresh_display(self):
+        """Apply search, rating filter, sort, grouping, and repopulate."""
+        search = self._search.text().strip().lower()
+
+        # Filter
+        filtered = []
+        for entry in self._entries:
+            meta = self._meta_cache.get(entry["path"], {})
+
+            # Rating filter
+            if not self._passes_rating_filter(meta):
+                continue
+
+            # Search filter — match against name, folder, and all metadata
+            if search:
+                searchable = " ".join([
+                    entry["name"].lower(),
+                    entry["folder"].lower(),
+                    meta.get("title_jp", "").lower(),
+                    meta.get("title_en", "").lower(),
+                    meta.get("author", "").lower(),
+                    meta.get("artist", "").lower(),
+                    meta.get("circle", "").lower(),
+                    meta.get("publisher", "").lower(),
+                    meta.get("tags", "").lower(),
+                    meta.get("year", "").lower(),
+                ])
+                if search not in searchable:
+                    continue
+
+            filtered.append(entry)
+
+        # Sort
+        sort_mode = self._sort_combo.currentText()
+        filtered = self._sort_entries(filtered, sort_mode)
+
+        # Populate
+        if self._view_mode == "grid":
+            self._populate_flat(filtered)
+        else:
+            self._populate_grouped(filtered)
+
+        self._apply_cached_thumbs()
+
+        # Status
+        total = len(self._entries)
+        shown = len(filtered)
+        if shown == total:
+            self._status.setText(
+                f"{total} item{'s' if total != 1 else ''}"
+                if total else "No manga or comic files found."
+            )
+        else:
+            self._status.setText(f"{shown} of {total} items")
+
+    def _sort_entries(self, entries: list[dict], mode: str) -> list[dict]:
+        def sort_key(e):
+            meta = self._meta_cache.get(e["path"], {})
+            if mode == "Title":
+                title = _display_title(e, meta)
+                return _nat_key(title)
+            elif mode == "Author":
+                return _nat_key(meta.get("author", "") or e["name"])
+            elif mode == "Year":
+                return meta.get("year", "9999")
+            else:  # Filename
+                return _nat_key(e["name"])
+        return sorted(entries, key=sort_key)
+
+    def _populate_grouped(self, entries: list[dict]):
+        """List view: group entries by title, with group headers."""
         self._list.clear()
         self._item_map = {}
+        self._group_items = []
+
+        placeholder = QPixmap(LIST_ICON_W, LIST_ICON_H)
+        placeholder.fill(Qt.GlobalColor.transparent)
+
+        # Group by title (entries with same title_jp or title_en)
+        groups: dict[str, list[dict]] = defaultdict(list)
+        ungrouped: list[dict] = []
+
+        for entry in entries:
+            meta = self._meta_cache.get(entry["path"], {})
+            group_key = meta.get("title_jp") or meta.get("title_en") or ""
+            if group_key:
+                groups[group_key].append(entry)
+            else:
+                ungrouped.append(entry)
+
+        # Sort groups by title
+        sorted_groups = sorted(groups.items(), key=lambda kv: _nat_key(kv[0]))
+
+        # Add grouped entries
+        for group_title, group_entries in sorted_groups:
+            if len(group_entries) > 1:
+                # Add group header
+                header_item = QListWidgetItem(f"  {group_title}  ({len(group_entries)})")
+                header_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                header_item.setData(Qt.ItemDataRole.UserRole, None)
+                header_item.setFont(QFont("", 10, QFont.Weight.Bold))
+                header_item.setBackground(
+                    Qt.GlobalColor.transparent
+                )
+                header_item.setForeground(
+                    QLabel().palette().color(QLabel().foregroundRole())
+                )
+                # Use a subtle style for group headers
+                header_item.setSizeHint(QSize(-1, 28))
+                self._list.addItem(header_item)
+                self._group_items.append(header_item)
+
+            for entry in group_entries:
+                meta = self._meta_cache.get(entry["path"], {})
+                display = _display_title(entry, meta)
+                if entry["folder"]:
+                    display += f"    —  {entry['folder']}"
+                item = QListWidgetItem(QIcon(placeholder), display)
+                item.setData(Qt.ItemDataRole.UserRole, entry["path"])
+                item.setToolTip(entry["path"])
+                self._list.addItem(item)
+                self._item_map[entry["path"]] = item
+
+        # Add ungrouped entries
+        if ungrouped and sorted_groups:
+            sep_item = QListWidgetItem("  Ungrouped")
+            sep_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            sep_item.setData(Qt.ItemDataRole.UserRole, None)
+            sep_item.setFont(QFont("", 10, QFont.Weight.Bold))
+            sep_item.setSizeHint(QSize(-1, 28))
+            self._list.addItem(sep_item)
+            self._group_items.append(sep_item)
+
+        for entry in ungrouped:
+            meta = self._meta_cache.get(entry["path"], {})
+            display = _display_title(entry, meta)
+            if entry["folder"]:
+                display += f"    —  {entry['folder']}"
+            item = QListWidgetItem(QIcon(placeholder), display)
+            item.setData(Qt.ItemDataRole.UserRole, entry["path"])
+            item.setToolTip(entry["path"])
+            self._list.addItem(item)
+            self._item_map[entry["path"]] = item
+
+    def _populate_flat(self, entries: list[dict]):
+        """Grid view: flat list, no grouping."""
+        self._list.clear()
+        self._item_map = {}
+        self._group_items = []
 
         placeholder = QPixmap(THUMB_W, THUMB_H)
         placeholder.fill(Qt.GlobalColor.transparent)
 
         for entry in entries:
-            if self._view_mode == "grid":
-                display = ""
-            else:
-                if entry["folder"]:
-                    display = f"{entry['name']}    —  {entry['folder']}"
-                else:
-                    display = entry["name"]
-
-            item = QListWidgetItem(QIcon(placeholder), display)
+            meta = self._meta_cache.get(entry["path"], {})
+            display_name = _display_title(entry, meta)
+            item = QListWidgetItem(QIcon(placeholder), "")
             item.setData(Qt.ItemDataRole.UserRole, entry["path"])
-            item.setToolTip(
-                entry["name"] if self._view_mode == "grid"
-                else entry["path"]
-            )
+            item.setToolTip(display_name)
             self._list.addItem(item)
             self._item_map[entry["path"]] = item
 
@@ -577,23 +777,6 @@ class LibraryDialog(QDialog):
         item = self._item_map.get(file_path)
         if item:
             item.setIcon(QIcon(thumb))
-
-    # ── Search filter ────────────────────────────────────────────────────────
-
-    def _filter_list(self, text: str):
-        text = text.strip().lower()
-        if not text:
-            self._populate_list(self._entries)
-        else:
-            filtered = [
-                e for e in self._entries
-                if text in e["name"].lower() or text in e["folder"].lower()
-            ]
-            self._populate_list(filtered)
-            self._status.setText(
-                f"{len(filtered)} of {len(self._entries)} items"
-            )
-        self._apply_cached_thumbs()
 
     def _apply_cached_thumbs(self):
         for path, item in self._item_map.items():
