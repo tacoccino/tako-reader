@@ -377,6 +377,20 @@ class SettingsDialog(QDialog):
                        "Clearing forces thumbnails to regenerate next time.")
         self._update_cache_size_label()
 
+        # Clear local data
+        clear_local_btn = QPushButton("Clear Local Data…")
+        clear_local_btn.setFixedWidth(140)
+        clear_local_btn.clicked.connect(self._clear_local_data)
+        clear_local_container = QWidget()
+        clear_local_lay = QHBoxLayout(clear_local_container)
+        clear_local_lay.setContentsMargins(0, 0, 0, 0)
+        clear_local_lay.addWidget(clear_local_btn)
+        clear_local_lay.addStretch()
+        self._row(lib_lay, "Local Data", clear_local_container,
+                  hint="Clears per-file metadata, bookmarks, reading positions, "
+                       "and OCR results stored locally on this device. "
+                       "Data in the library database is not affected.")
+
         # Reading
         read_lay = self._section("Reading")
         self.default_reading_combo = QComboBox()
@@ -509,6 +523,38 @@ class SettingsDialog(QDialog):
             self._cache_size_label.setText(f"{size} bytes")
         else:
             self._cache_size_label.setText("Empty")
+
+    def _clear_local_data(self):
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Clear Local Data")
+        msg.setText(
+            "This will remove all locally stored per-file data including:\n\n"
+            "  • Metadata (title, author, etc.)\n"
+            "  • Bookmarks and reading positions\n"
+            "  • Reading direction and page offset\n"
+            "  • Image adjustments and rotation\n"
+            "  • OCR results\n\n"
+            "Data stored in the library database (library.db) is not affected.\n\n"
+            "This cannot be undone."
+        )
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        # Remove all per-file QSettings keys
+        prefixes = [
+            "metadata/", "bookmarks/", "last_page/", "reading_mode/",
+            "page_offset/", "rotation/", "adjustments/", "ocr_results/",
+        ]
+        for key in self.app_settings.allKeys():
+            for prefix in prefixes:
+                if key.startswith(prefix):
+                    self.app_settings.remove(key)
+                    break
 
     # ── OCR section ───────────────────────────────────────────────────────────
 

@@ -1536,15 +1536,93 @@ class TakoReader(QMainWindow):
         return hashlib.md5(self._current_file.encode()).hexdigest()[:12]
 
     def _init_library_db(self):
-        """Open the library DB if a library path is configured."""
+        """Open the library DB if a library path is configured.
+        Migrates any QSettings metadata into the DB on first run."""
+        if self._db:
+            self._db.close()
+            self._db = None
         lib_path = self._settings.value("library/path", "")
         if lib_path and Path(lib_path).is_dir():
             try:
                 self._db = LibraryDB(lib_path)
+                self._migrate_qsettings_to_db()
             except Exception:
                 self._db = None
-        else:
-            self._db = None
+
+    def _migrate_qsettings_to_db(self):
+        """One-time migration: copy metadata and file_state from QSettings into DB."""
+        if not self._db:
+            return
+        import json as _json, hashlib
+        lib_root = self._db.root
+
+        # Scan for files in the library folder
+        from library import _scan_library, SUPPORTED_EXTS
+        try:
+            entries = _scan_library(lib_root)
+        except Exception:
+            return
+
+        migrated = 0
+        for entry in entries:
+            file_path = entry["path"]
+            h = hashlib.md5(file_path.encode()).hexdigest()[:12]
+
+            # Migrate metadata
+            existing_meta = self._db.get_metadata(file_path)
+            if not existing_meta:
+                raw = self._settings.value(f"metadata/{h}", "")
+                if raw:
+                    try:
+                        data = _json.loads(raw)
+                        if data:
+                            self._db.set_metadata(file_path, data)
+                            migrated += 1
+                    except Exception:
+                        pass
+
+            # Migrate file state
+            existing_state = self._db.get_file_state(file_path)
+            if not existing_state:
+                state = {}
+                # Last page
+                lp = self._settings.value(f"last_page/{h}", None)
+                if lp is not None:
+                    try: state["last_page"] = int(lp)
+                    except: pass
+                # Reading mode
+                rm = self._settings.value(f"reading_mode/{h}", "")
+                if rm:
+                    state["reading_mode"] = rm
+                # Page offset
+                po = self._settings.value(f"page_offset/{h}", None)
+                if po is not None:
+                    try: state["page_offset"] = int(po)
+                    except: pass
+                # Rotation
+                rot = self._settings.value(f"rotation/{h}", None)
+                if rot is not None:
+                    try: state["rotation"] = int(rot)
+                    except: pass
+                # Adjustments
+                adj_raw = self._settings.value(f"adjustments/{h}", "")
+                if adj_raw:
+                    try: state["adjustments"] = _json.loads(adj_raw)
+                    except: pass
+                # Bookmarks
+                bm_raw = self._settings.value(f"bookmarks/{h}", "")
+                if bm_raw:
+                    try: state["bookmarks"] = _json.loads(bm_raw)
+                    except: pass
+                # OCR results
+                ocr_raw = self._settings.value(f"ocr_results/{h}", "")
+                if ocr_raw:
+                    try: state["ocr_results"] = _json.loads(ocr_raw)
+                    except: pass
+
+                if state:
+                    self._db.set_file_state(file_path, **state)
+                    migrated += 1
 
     def _file_in_db(self) -> bool:
         """Check if the current file is inside the library and DB is available."""
@@ -2315,6 +2393,8 @@ class TakoReader(QMainWindow):
             new_accent = self._settings.value("ui/accent", theme.DEFAULT_ACCENT)
             if new_theme != old_theme or new_accent != old_accent:
                 self._refresh_theme()
+            # Reinit library DB in case the library path changed
+            self._init_library_db()
             self._toast(f"Settings saved — OCR device: {new_device}")
 
     def _check_ocr(self):
