@@ -487,6 +487,7 @@ class SettingsDialog(QDialog):
             self._select_accent(colour.name())
 
     def _pick_library_folder(self):
+        from PyQt6.QtWidgets import QFileDialog
         current = self.library_path.text() or ""
         path = QFileDialog.getExistingDirectory(self, "Choose Library Folder", current)
         if path:

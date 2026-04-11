@@ -17,7 +17,7 @@ from collections import defaultdict
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
-    QWidget, QApplication, QComboBox,
+    QWidget, QApplication, QComboBox, QGridLayout, QFrame,
 )
 from PyQt6.QtCore import (
     Qt, QSettings, QSize, QThread, pyqtSignal, QStandardPaths,
@@ -480,6 +480,7 @@ class LibraryDialog(QDialog):
             f"}}"
         )
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._apply_view_mode()
         root.addWidget(self._list, stretch=1)
 
@@ -501,6 +502,12 @@ class LibraryDialog(QDialog):
         # ── Bottom buttons ──
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
+
+        edit_meta_btn = QPushButton("Edit Metadata…")
+        edit_meta_btn.setStyleSheet(theme.BTN_MAIN)
+        edit_meta_btn.clicked.connect(self._batch_edit_metadata)
+        bottom.addWidget(edit_meta_btn)
+
         bottom.addStretch()
 
         open_btn = QPushButton("Open")
@@ -830,6 +837,178 @@ class LibraryDialog(QDialog):
         if path:
             self._open_callback(path)
             self.accept()
+
+    def _batch_edit_metadata(self):
+        """Open a dialog to edit metadata for all selected files."""
+        selected = self._list.selectedItems()
+        # Filter out group headers (they have no path)
+        paths = [item.data(Qt.ItemDataRole.UserRole)
+                 for item in selected
+                 if item.data(Qt.ItemDataRole.UserRole)]
+        if not paths:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Metadata")
+        dlg.setMinimumWidth(420)
+        dlg.setModal(True)
+
+        label_style = f"color: {theme._active['text_muted']}; font-size: 9pt;"
+        input_style = (
+            f"background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border_light']}; border-radius: 4px;"
+            f" padding: 3px 6px; font-size: 10pt;"
+        )
+        disabled_style = (
+            f"background: {theme._active['window_bg']}; color: {theme._active['text_muted']};"
+            f" border: 1px solid {theme._active['border_light']}; border-radius: 4px;"
+            f" padding: 3px 6px; font-size: 10pt;"
+        )
+
+        dlg.setStyleSheet(
+            f"QDialog {{ background: {theme._active['window_bg']};"
+            f" color: {theme._active['text']}; }}"
+            f" QLabel {{ color: {theme._active['text']}; }}"
+            f" QLineEdit {{ {input_style} }}"
+        )
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
+
+        # Heading
+        count = len(paths)
+        heading = QLabel(f"Editing {count} file{'s' if count != 1 else ''}")
+        heading.setFont(QFont("", 14, QFont.Weight.Bold))
+        heading.setStyleSheet(f"color: {theme._active['text']};")
+        root.addWidget(heading)
+
+        hint = QLabel("Only non-empty fields will be applied. Existing values in blank fields are preserved.")
+        hint.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        # Metadata grid
+        meta_grid = QGridLayout()
+        meta_grid.setSpacing(8)
+        meta_grid.setColumnMinimumWidth(0, 100)
+
+        meta_fields = [
+            ("title_jp",   "Title (JP)",  True),
+            ("title_en",   "Title (EN)",  True),
+            ("volume",     "Volume",      False),  # disabled
+            ("author",     "Author",      True),
+            ("artist",     "Artist",      True),
+            ("circle",     "Circle",      True),
+            ("publisher",  "Publisher",    True),
+            ("year",       "Year",        True),
+            ("language",   "Language",    True),
+            ("tags",       "Tags",        True),
+            ("notes",      "Notes",       True),
+        ]
+
+        meta_edits = {}
+        for row, (key, label, enabled) in enumerate(meta_fields):
+            lbl = QLabel(label)
+            lbl.setStyleSheet(label_style)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            meta_grid.addWidget(lbl, row, 0)
+
+            edit = QLineEdit()
+            edit.setEnabled(enabled)
+            if not enabled:
+                edit.setStyleSheet(disabled_style)
+                edit.setPlaceholderText("(per-file)")
+            elif key == "tags":
+                edit.setPlaceholderText("comma-separated")
+            meta_edits[key] = edit
+            meta_grid.addWidget(edit, row, 1)
+
+        # Rating
+        rating_row = len(meta_fields)
+        rating_lbl = QLabel("Rating")
+        rating_lbl.setStyleSheet(label_style)
+        rating_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        meta_grid.addWidget(rating_lbl, rating_row, 0)
+
+        rating_combo = QComboBox()
+        rating_combo.addItems(["— (no change)", "SFW", "Suggestive", "NSFW"])
+        rating_combo.setStyleSheet(
+            f"QComboBox {{"
+            f" background: {theme._active['input_bg']}; color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border_light']}; border-radius: 4px;"
+            f" padding: 3px 6px; font-size: 10pt;"
+            f"}}"
+        )
+        meta_grid.addWidget(rating_combo, rating_row, 1)
+
+        root.addLayout(meta_grid)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+
+        save_btn = QPushButton("Save")
+        save_btn.setStyleSheet(theme.BTN_MAIN)
+
+        def _do_save():
+            # Collect non-empty fields
+            updates = {}
+            for key, edit in meta_edits.items():
+                if edit.isEnabled():
+                    val = edit.text().strip()
+                    if val:
+                        updates[key] = val
+            rating = rating_combo.currentText()
+            if not rating.startswith("—"):
+                updates["rating"] = rating
+
+            if not updates:
+                dlg.accept()
+                return
+
+            # Apply to each selected file
+            import json as _json
+            for file_path in paths:
+                # Load existing metadata
+                existing = {}
+                if self._db:
+                    existing = self._db.get_metadata(file_path)
+                if not existing:
+                    existing = _load_meta(self.app_settings, file_path)
+
+                # Merge updates into existing
+                existing.update(updates)
+
+                # Save to DB
+                if self._db:
+                    self._db.set_metadata(file_path, existing)
+
+                # Save to QSettings for backward compat
+                import hashlib
+                h = hashlib.md5(file_path.encode()).hexdigest()[:12]
+                self.app_settings.setValue(
+                    f"metadata/{h}",
+                    _json.dumps(existing, ensure_ascii=False),
+                )
+
+                # Update local cache
+                self._meta_cache[file_path] = existing
+
+            dlg.accept()
+            self._refresh_display()
+
+        save_btn.clicked.connect(_do_save)
+        btn_row.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(theme.BTN_MAIN)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel_btn)
+
+        root.addLayout(btn_row)
+        dlg.exec()
 
     def closeEvent(self, event):
         if self._thumb_worker and self._thumb_worker.isRunning():
