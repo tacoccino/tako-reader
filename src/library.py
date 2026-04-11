@@ -26,6 +26,7 @@ from PyQt6.QtGui import QFont, QPixmap, QImage, QIcon
 
 import theme
 from utils import load_icon
+from database import LibraryDB
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -362,6 +363,7 @@ class LibraryDialog(QDialog):
         self._rating_filter_idx = 0  # index into RATING_FILTERS
         self._item_map: dict[str, QListWidgetItem] = {}
         self._group_items: list[QListWidgetItem] = []  # group header items
+        self._db: LibraryDB | None = None
 
         self.setStyleSheet(
             f"QDialog {{ background: {theme._active['window_bg']};"
@@ -595,11 +597,29 @@ class LibraryDialog(QDialog):
 
         self._entries = _scan_library(Path(lib_path))
 
-        # Pre-load all metadata
-        for entry in self._entries:
-            self._meta_cache[entry["path"]] = _load_meta(
-                self.app_settings, entry["path"]
-            )
+        # Open / reopen database
+        try:
+            self._db = LibraryDB(lib_path)
+        except Exception:
+            self._db = None
+
+        # Pre-load all metadata from DB (with QSettings fallback)
+        if self._db:
+            all_meta = self._db.get_all_metadata()
+            for entry in self._entries:
+                rp = self._db.rel_path(entry["path"])
+                if rp in all_meta:
+                    self._meta_cache[entry["path"]] = all_meta[rp]
+                else:
+                    # Fallback to QSettings
+                    self._meta_cache[entry["path"]] = _load_meta(
+                        self.app_settings, entry["path"]
+                    )
+        else:
+            for entry in self._entries:
+                self._meta_cache[entry["path"]] = _load_meta(
+                    self.app_settings, entry["path"]
+                )
 
         self._refresh_display()
 
@@ -815,4 +835,6 @@ class LibraryDialog(QDialog):
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.stop()
             self._thumb_worker.wait(1000)
+        if self._db:
+            self._db.close()
         super().closeEvent(event)

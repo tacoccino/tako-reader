@@ -41,6 +41,7 @@ from widgets import (
 )
 from settings import SettingsDialog
 from library import LibraryDialog
+from database import LibraryDB
 
 
 # ─── Main Window ─────────────────────────────────────────────────────────────
@@ -109,6 +110,8 @@ class TakoReader(QMainWindow):
         self._adj_debounce                  = None  # QTimer, set up after build
         self._series: SeriesContext | None   = None
         self._at_volume_boundary            = False  # for two-press advance
+        self._db: LibraryDB | None          = None
+        self._init_library_db()
 
         # Initialise theme engine before building UI so load_icon() uses
         # the correct icon variant (dark/light) from the very first call.
@@ -719,6 +722,7 @@ class TakoReader(QMainWindow):
         fk = self._ocr_file_key()
         if fk:
             self.ocr_panel.save_results(fk)
+        self._save_ocr_to_db()
         self.ocr_panel.clear_all()
         self.setWindowTitle("Tako Reader — タコReader")
         self._set_keep_awake(False)
@@ -780,6 +784,7 @@ class TakoReader(QMainWindow):
         old_ocr_key = self._ocr_file_key()
         if old_ocr_key:
             self.ocr_panel.save_results(old_ocr_key)
+        self._save_ocr_to_db()
         self.ocr_panel.clear_all()
 
         self._current_file = str(Path(path).resolve())
@@ -808,10 +813,11 @@ class TakoReader(QMainWindow):
             self._series = None
         self._update_series_ui()
 
-        # Load saved OCR results for the new file
-        new_fk = self._ocr_file_key()
-        if new_fk:
-            self.ocr_panel.load_results(new_fk)
+        # Load saved OCR results for the new file (DB first, QSettings fallback)
+        if not self._load_ocr_from_db():
+            new_fk = self._ocr_file_key()
+            if new_fk:
+                self.ocr_panel.load_results(new_fk)
 
         self.thumb_list.load_pages(pages)
         self._settings.setValue("session/last_file", str(Path(path).resolve()))
@@ -1456,24 +1462,31 @@ class TakoReader(QMainWindow):
         return f"adjustments/{h}"
 
     def _load_adjustments(self) -> dict:
+        defaults = {"brightness": 100, "contrast": 100, "saturation": 100,
+                     "sharpness": 100, "warmth": 0}
         if not self._current_file:
-            return {"brightness": 100, "contrast": 100, "saturation": 100, "sharpness": 100}
+            return dict(defaults)
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "adjustments" in state:
+                d = dict(defaults)
+                d.update(state["adjustments"])
+                return d
         import json as _json
         raw = self._settings.value(self._adj_key(), "{}")
         try:
             saved = _json.loads(raw)
-            defaults = {"brightness": 100, "contrast": 100, "saturation": 100,
-                        "sharpness": 100, "warmth": 0}
             defaults.update(saved)
             return defaults
         except Exception:
-            return {"brightness": 100, "contrast": 100, "saturation": 100,
-                    "sharpness": 100, "warmth": 0}
+            return dict(defaults)
 
     def _save_adjustments(self):
         if self._current_file:
             import json as _json
             self._settings.setValue(self._adj_key(), _json.dumps(self._adjustments))
+            if self._file_in_db():
+                self._db.set_file_state(self._current_file, adjustments=self._adjustments)
 
     def _rot_key(self) -> str:
         import hashlib
@@ -1483,11 +1496,17 @@ class TakoReader(QMainWindow):
     def _load_rotation(self) -> int:
         if not self._current_file:
             return 0
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "rotation" in state:
+                return state["rotation"]
         return self._settings.value(self._rot_key(), 0, type=int)
 
     def _save_rotation(self):
         if self._current_file:
             self._settings.setValue(self._rot_key(), self._rotation)
+            if self._file_in_db():
+                self._db.set_file_state(self._current_file, rotation=self._rotation)
 
     def _offset_key(self) -> str:
         import hashlib
@@ -1497,11 +1516,17 @@ class TakoReader(QMainWindow):
     def _load_page_offset(self) -> int:
         if not self._current_file:
             return 0
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "page_offset" in state:
+                return state["page_offset"]
         return self._settings.value(self._offset_key(), 0, type=int)
 
     def _save_page_offset(self):
         if self._current_file:
             self._settings.setValue(self._offset_key(), self._page_offset)
+            if self._file_in_db():
+                self._db.set_file_state(self._current_file, page_offset=self._page_offset)
 
     def _ocr_file_key(self) -> str:
         """Return a short hash key for OCR result persistence."""
@@ -1509,6 +1534,58 @@ class TakoReader(QMainWindow):
             return ""
         import hashlib
         return hashlib.md5(self._current_file.encode()).hexdigest()[:12]
+
+    def _init_library_db(self):
+        """Open the library DB if a library path is configured."""
+        lib_path = self._settings.value("library/path", "")
+        if lib_path and Path(lib_path).is_dir():
+            try:
+                self._db = LibraryDB(lib_path)
+            except Exception:
+                self._db = None
+        else:
+            self._db = None
+
+    def _file_in_db(self) -> bool:
+        """Check if the current file is inside the library and DB is available."""
+        return (self._db is not None
+                and self._current_file
+                and self._db.is_in_library(self._current_file))
+
+    def _save_ocr_to_db(self):
+        """Save current OCR cards to the library DB."""
+        if not self._file_in_db():
+            return
+        cards = self.ocr_panel._cards
+        entries = []
+        for card in reversed(cards):
+            entry = {"page": card.page_index, "text": card.raw_text}
+            if card.source_rect:
+                r = card.source_rect
+                entry["rect"] = [r.x(), r.y(), r.width(), r.height()]
+            entries.append(entry)
+        self._db.set_file_state(self._current_file, ocr_results=entries)
+
+    def _load_ocr_from_db(self) -> bool:
+        """Load OCR cards from the library DB. Returns True if data was found."""
+        if not self._file_in_db():
+            return False
+        state = self._db.get_file_state(self._current_file)
+        results = state.get("ocr_results")
+        if not results:
+            return False
+        from PyQt6.QtCore import QRect
+        for entry in results:
+            rect = None
+            if "rect" in entry:
+                r = entry["rect"]
+                rect = QRect(r[0], r[1], r[2], r[3])
+            self.ocr_panel._add_card(
+                entry["text"],
+                page_index=entry.get("page", 0),
+                source_rect=rect,
+            )
+        return True
 
     def _set_reading_mode(self, mode: str):
         self._reading_mode = mode
@@ -1528,6 +1605,10 @@ class TakoReader(QMainWindow):
     def _load_reading_mode(self) -> str:
         if not self._current_file:
             return self._settings.value("view/default_reading_mode", "rtl")
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "reading_mode" in state:
+                return state["reading_mode"]
         saved = self._settings.value(self._reading_mode_key(), "")
         if saved:
             return saved
@@ -1536,6 +1617,8 @@ class TakoReader(QMainWindow):
     def _save_reading_mode(self):
         if self._current_file:
             self._settings.setValue(self._reading_mode_key(), self._reading_mode)
+            if self._file_in_db():
+                self._db.set_file_state(self._current_file, reading_mode=self._reading_mode)
 
     # ─────────────────────────────────────────────────────────────────────────
     # OCR
@@ -1978,15 +2061,18 @@ class TakoReader(QMainWindow):
         else:
             dimensions = "—"
 
-        # Load existing metadata
+        # Load existing metadata (DB first, QSettings fallback)
         import hashlib
         meta_hash = hashlib.md5(self._current_file.encode()).hexdigest()[:12]
         meta_key = f"metadata/{meta_hash}"
-        raw_meta = self._settings.value(meta_key, "{}")
-        try:
-            meta = _json.loads(raw_meta)
-        except Exception:
-            meta = {}
+        if self._file_in_db():
+            meta = self._db.get_metadata(self._current_file)
+        else:
+            raw_meta = self._settings.value(meta_key, "{}")
+            try:
+                meta = _json.loads(raw_meta)
+            except Exception:
+                meta = {}
 
         # Build dialog
         dlg = QDialog(self)
@@ -2144,6 +2230,10 @@ class TakoReader(QMainWindow):
             rating = rating_combo.currentText()
             if rating != "—":
                 data["rating"] = rating
+            # Save to DB if available
+            if self._file_in_db():
+                self._db.set_metadata(self._current_file, data)
+            # Also save to QSettings for backward compat
             self._settings.setValue(meta_key, _json.dumps(data, ensure_ascii=False))
             dlg.accept()
         save_btn.clicked.connect(_save_meta)
@@ -2396,11 +2486,17 @@ class TakoReader(QMainWindow):
     def _load_last_page(self) -> int:
         if not self._current_file:
             return 0
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "last_page" in state:
+                return state["last_page"]
         return self._settings.value(self._page_key(), 0, type=int)
 
     def _save_last_page(self, index: int):
         if self._current_file:
             self._settings.setValue(self._page_key(), index)
+            if self._file_in_db():
+                self._db.set_file_state(self._current_file, last_page=index)
 
     def _bm_key(self) -> str:
         import hashlib
@@ -2410,6 +2506,10 @@ class TakoReader(QMainWindow):
     def _load_bookmarks(self) -> list:
         if not self._current_file:
             return []
+        if self._file_in_db():
+            state = self._db.get_file_state(self._current_file)
+            if "bookmarks" in state:
+                return state["bookmarks"]
         import json as _json
         raw = self._settings.value(self._bm_key(), "[]")
         try:
@@ -2420,6 +2520,8 @@ class TakoReader(QMainWindow):
     def _save_bookmarks(self):
         import json as _json
         self._settings.setValue(self._bm_key(), _json.dumps(self._bookmarks))
+        if self._file_in_db():
+            self._db.set_file_state(self._current_file, bookmarks=self._bookmarks)
 
     def _page_is_bookmarked(self) -> bool:
         return any(b["page"] == self._current for b in self._bookmarks)
@@ -2549,12 +2651,15 @@ class TakoReader(QMainWindow):
         fk = self._ocr_file_key()
         if fk:
             self.ocr_panel.save_results(fk)
+        self._save_ocr_to_db()
         self._settings.setValue("geometry",          self.saveGeometry())
         self._settings.setValue("ui/thumb_visible",  self.thumb_list.isVisible())
         self._settings.setValue("ui/ocr_visible",    self.ocr_panel.isVisible())
         self._settings.setValue("ui/segment_on",     self.ocr_panel.seg_check.isChecked())
         self._settings.setValue("ui/page_mode",      self._page_mode)
         self._settings.setValue("ui/fit_mode",       self.page_view._fit_mode)
+        if self._db:
+            self._db.close()
         shutdown_ocr()
         super().closeEvent(event)
 
