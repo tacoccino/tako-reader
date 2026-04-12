@@ -74,6 +74,35 @@ class LibraryDB:
             )
         """)
         c.commit()
+        self._normalize_paths()
+
+    def _normalize_paths(self):
+        """Fix backslash paths in existing entries — deduplicate if needed."""
+        for table in ("metadata", "file_state"):
+            rows = self._conn.execute(
+                f"SELECT rel_path FROM {table} WHERE rel_path LIKE '%\\%'"
+            ).fetchall()
+            for row in rows:
+                old_path = row["rel_path"]
+                new_path = old_path.replace("\\", "/")
+                # Check if a forward-slash version already exists
+                existing = self._conn.execute(
+                    f"SELECT rel_path FROM {table} WHERE rel_path = ?",
+                    (new_path,),
+                ).fetchone()
+                if existing:
+                    # Delete the backslash duplicate
+                    self._conn.execute(
+                        f"DELETE FROM {table} WHERE rel_path = ?",
+                        (old_path,),
+                    )
+                else:
+                    # Rename to forward slashes
+                    self._conn.execute(
+                        f"UPDATE {table} SET rel_path = ? WHERE rel_path = ?",
+                        (new_path, old_path),
+                    )
+            self._conn.commit()
 
     def close(self):
         if self._conn:
@@ -216,10 +245,20 @@ class LibraryDB:
             else:
                 values[k] = v
 
-        # Check if row exists
-        existing = self._conn.execute(
-            "SELECT rel_path FROM file_state WHERE rel_path = ?", (rp,)
-        ).fetchone()
+        # Check if row exists (try both slash styles)
+        existing = None
+        for try_path in (rp, rp.replace("/", "\\")):
+            existing = self._conn.execute(
+                "SELECT rel_path FROM file_state WHERE rel_path = ?", (try_path,)
+            ).fetchone()
+            if existing:
+                # If found with backslashes, update to use forward slashes
+                if try_path != rp:
+                    self._conn.execute(
+                        "UPDATE file_state SET rel_path = ? WHERE rel_path = ?",
+                        (rp, try_path),
+                    )
+                break
 
         if existing:
             sets = ", ".join(f"{k} = ?" for k in values)
