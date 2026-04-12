@@ -731,8 +731,6 @@ class LibraryDialog(QDialog):
             for entry in group_entries:
                 meta = self._meta_cache.get(entry["path"], {})
                 display = _display_title(entry, meta)
-                if entry["folder"]:
-                    display += f"    —  {entry['folder']}"
                 item = QListWidgetItem(QIcon(placeholder), display)
                 item.setData(Qt.ItemDataRole.UserRole, entry["path"])
                 item.setToolTip(entry["path"])
@@ -752,8 +750,6 @@ class LibraryDialog(QDialog):
         for entry in ungrouped:
             meta = self._meta_cache.get(entry["path"], {})
             display = _display_title(entry, meta)
-            if entry["folder"]:
-                display += f"    —  {entry['folder']}"
             item = QListWidgetItem(QIcon(placeholder), display)
             item.setData(Qt.ItemDataRole.UserRole, entry["path"])
             item.setToolTip(entry["path"])
