@@ -365,22 +365,22 @@ class LibraryDialog(QDialog):
         self._group_items: list[QListWidgetItem] = []  # group header items
         self._db: LibraryDB | None = None
 
-        self.setStyleSheet(
-            f"QDialog {{ background: {theme._active['window_bg']};"
-            f" color: {theme._active['text']}; }}"
-        )
-
+        # self.setStyleSheet(
+        #     f"QDialog {{ background: {theme._active['window_bg']};"
+        #     f" color: {theme._active['text']}; }}"
+        # )
+        self.setStyleSheet(theme.LIBRARY_STYLESHEET)
         self._build_ui()
         self._load_library()
 
     def _build_ui(self):
-        icon_btn_style = f"""
-            QPushButton {{
-                background: transparent; border: 1px solid {theme._active['border']};
-                border-radius: 6px; padding: 4px;
-            }}
-            QPushButton:hover {{ background: {theme._active['hover_bg']}; }}
-        """
+        # icon_btn_style = f"""
+        #     QPushButton {{
+        #         background: transparent; border: 1px solid {theme._active['border']};
+        #         border-radius: 6px; padding: 4px;
+        #     }}
+        #     QPushButton:hover {{ background: {theme._active['hover_bg']}; }}
+        # """
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -419,7 +419,6 @@ class LibraryDialog(QDialog):
         # Refresh
         self._refresh_btn = QPushButton()
         self._refresh_btn.setFixedSize(30, 30)
-        self._refresh_btn.setStyleSheet(icon_btn_style)
         self._refresh_btn.setToolTip("Refresh")
         ic_refresh = load_icon("refresh")
         if not ic_refresh.isNull():
@@ -452,7 +451,6 @@ class LibraryDialog(QDialog):
 
         self._view_btn = QPushButton()
         self._view_btn.setFixedSize(30, 30)
-        self._view_btn.setStyleSheet(icon_btn_style)
         self._view_btn.setToolTip("Toggle list / grid view")
         self._view_btn.clicked.connect(self._toggle_view)
         self._update_view_btn_icon()
@@ -462,23 +460,23 @@ class LibraryDialog(QDialog):
 
         # ── File list ──
         self._list = QListWidget()
-        self._list.setStyleSheet(
-            f"QListWidget {{"
-            f" background: {theme._active['card_bg']};"
-            f" border: 1px solid {theme._active['border_light']};"
-            f" border-radius: 6px; padding: 4px;"
-            f"}}"
-            f" QListWidget::item {{"
-            f" color: {theme._active['text']};"
-            f" padding: 4px; border-radius: 4px;"
-            f"}}"
-            f" QListWidget::item:selected {{"
-            f" background: {theme.ACCENT}; color: #fff;"
-            f"}}"
-            f" QListWidget::item:hover {{"
-            f" background: {theme._active['hover_bg']};"
-            f"}}"
-        )
+        # self._list.setStyleSheet(
+        #     f"QListWidget {{"
+        #     f" background: {theme._active['card_bg']};"
+        #     f" border: 1px solid {theme._active['border_light']};"
+        #     f" border-radius: 6px; padding: 4px;"
+        #     f"}}"
+        #     f" QListWidget::item {{"
+        #     f" color: {theme._active['text']};"
+        #     f" padding: 4px; border-radius: 4px;"
+        #     f"}}"
+        #     f" QListWidget::item:selected {{"
+        #     f" background: {theme.ACCENT}; color: #fff;"
+        #     f"}}"
+        #     f" QListWidget::item:hover {{"
+        #     f" background: {theme._active['hover_bg']};"
+        #     f"}}"
+        # )
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._apply_view_mode()

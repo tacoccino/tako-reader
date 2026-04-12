@@ -179,6 +179,7 @@ BTN_MAIN = ""
 APP_STYLESHEET = ""
 TOOLTIP_STYLESHEET = ""
 POPUP_STYLESHEET = ""
+LIBRARY_STYLESHEET = ""
 SETTINGS_STYLESHEET = ""
 THUMBNAIL_SCROLLBAR_STYLESHEET = ""
 
@@ -191,7 +192,7 @@ def _t(key: str) -> str:
 def _rebuild_styles():
     """Rebuild all module-level stylesheet strings from active theme + accent."""
     global CARD_STYLE, BTN_SUBTLE, BTN_MAIN, APP_STYLESHEET, TOOLTIP_STYLESHEET
-    global POPUP_STYLESHEET, SETTINGS_STYLESHEET, THUMBNAIL_SCROLLBAR_STYLESHEET
+    global POPUP_STYLESHEET, LIBRARY_STYLESHEET, SETTINGS_STYLESHEET, THUMBNAIL_SCROLLBAR_STYLESHEET
     a = ACCENT
 
     CARD_STYLE = f"""
@@ -326,7 +327,83 @@ def _rebuild_styles():
             background: white;
         }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background: none;}}
+    """
 
+    LIBRARY_STYLESHEET = f"""
+        QDialog {{ background: {_t('window_bg')}; color: {_t('text')}; }}
+        QPushButton {{
+            background: transparent; border: 1px solid {_t('border')};
+            border-radius: 6px; padding: 4px;
+        }}
+        QPushButton:hover {{ background: {_t('hover_bg')}; }}
+        QListWidget {{
+            background: {_t('card_bg')};
+            border: 1px solid {_t('border_light')};
+            border-radius: 6px; padding: 4px;
+        }}
+        QListWidget::item {{
+            color: {_t('text')};
+            padding: 4px; border-radius: 4px;
+        }}
+        QListWidget::item:selected {{
+            background: {a}; color: #fff;
+        }}
+        QListWidget::item:hover {{
+            background: {_t('hover_bg')};
+        }}
+        
+        QScrollBar:vertical {{ 
+            background: {_t('card_bg')}; 
+            width: 10px; margin: 0px; 
+            border: none; padding: 1px; 
+        }}
+        QScrollBar::handle:vertical {{ border-radius: 4px; min-height: 20px; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        QScrollBar:left-arrow:vertical, QScrollBar::right-arrow:vertical {{ 
+            border: 2px solid grey;
+            width: 3px;
+            height: 3px;
+            background: white;
+        }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background: none;}}
+        QLabel {{ color: {_t('text_muted')}; font-size: 9pt; }}
+        QComboBox {{
+            background: {_t('input_bg')}; color: {_t('text')};
+            border: 1px solid {_t('border_light')}; border-radius: 4px;
+            padding: 4px 8px; font-size: 10pt;
+            combobox-popup: 0;
+        }}
+        QComboBox::drop-down {{
+            border-left: 1px solid {_t('border_light')};
+            width: 24px;
+            border-top-right-radius: 4px;
+            border-bottom-right-radius: 4px;
+        }}
+        QComboBox::down-arrow {{
+            image: none; width: 0; height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid {_t('text_muted')};
+        }}
+        QComboBox::drop-down:hover {{ background: {_t('hover_bg')}; }}
+        QComboBox::down-arrow:hover {{ border-top-color: {_t('text')}; }}
+        QComboBox QAbstractItemView, QComboBox QListView {{
+            background-color: {_t('input_bg')}; color: {_t('text')};
+            selection-background-color: {a}; selection-color: #fff;
+            border: 1px solid {_t('border')};
+            outline: none;
+        }}
+        QComboBox QAbstractItemView::item {{
+            background-color: {_t('input_bg')}; color: {_t('text')};
+            padding: 4px 8px;
+        }}
+        QComboBox QAbstractItemView::item:selected {{
+            background-color: {a}; color: #fff;
+        }}
+        QComboBox QFrame {{
+            background-color: {_t('input_bg')};
+            border: 1px solid {_t('border')};
+        }}
     """
 
     SETTINGS_STYLESHEET = f"""
