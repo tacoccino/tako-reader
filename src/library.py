@@ -839,14 +839,20 @@ class LibraryDialog(QDialog):
             self.accept()
 
     def _batch_edit_metadata(self):
-        """Open a dialog to edit metadata for all selected files."""
+        """Open a dialog to edit metadata for selected files.
+        Single file: pre-filled fields with volume enabled.
+        Multiple files: blank fields, volume disabled."""
         selected = self._list.selectedItems()
-        # Filter out group headers (they have no path)
         paths = [item.data(Qt.ItemDataRole.UserRole)
                  for item in selected
                  if item.data(Qt.ItemDataRole.UserRole)]
         if not paths:
             return
+
+        single = len(paths) == 1
+        prefill = {}
+        if single:
+            prefill = self._meta_cache.get(paths[0], {})
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Edit Metadata")
@@ -878,15 +884,21 @@ class LibraryDialog(QDialog):
 
         # Heading
         count = len(paths)
-        heading = QLabel(f"Editing {count} file{'s' if count != 1 else ''}")
+        if single:
+            from pathlib import Path as _Path
+            heading = QLabel(_Path(paths[0]).name)
+        else:
+            heading = QLabel(f"Editing {count} files")
         heading.setFont(QFont("", 14, QFont.Weight.Bold))
         heading.setStyleSheet(f"color: {theme._active['text']};")
+        heading.setWordWrap(True)
         root.addWidget(heading)
 
-        hint = QLabel("Only non-empty fields will be applied. Existing values in blank fields are preserved.")
-        hint.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        if not single:
+            hint = QLabel("Only non-empty fields will be applied. Existing values in blank fields are preserved.")
+            hint.setStyleSheet(f"color: {theme._active['text_muted']}; font-size: 8pt;")
+            hint.setWordWrap(True)
+            root.addWidget(hint)
 
         # Metadata grid
         meta_grid = QGridLayout()
@@ -896,7 +908,7 @@ class LibraryDialog(QDialog):
         meta_fields = [
             ("title_jp",   "Title (JP)",  True),
             ("title_en",   "Title (EN)",  True),
-            ("volume",     "Volume",      False),  # disabled
+            ("volume",     "Volume",      single),  # enabled only for single file
             ("author",     "Author",      True),
             ("artist",     "Artist",      True),
             ("circle",     "Circle",      True),
@@ -921,6 +933,8 @@ class LibraryDialog(QDialog):
                 edit.setPlaceholderText("(per-file)")
             elif key == "tags":
                 edit.setPlaceholderText("comma-separated")
+            if single:
+                edit.setText(prefill.get(key, ""))
             meta_edits[key] = edit
             meta_grid.addWidget(edit, row, 1)
 
@@ -932,7 +946,14 @@ class LibraryDialog(QDialog):
         meta_grid.addWidget(rating_lbl, rating_row, 0)
 
         rating_combo = QComboBox()
-        rating_combo.addItems(["— (no change)", "SFW", "Suggestive", "NSFW"])
+        if single:
+            rating_combo.addItems(["—", "SFW", "Suggestive", "NSFW"])
+            saved_rating = prefill.get("rating", "—")
+            idx = rating_combo.findText(saved_rating)
+            if idx >= 0:
+                rating_combo.setCurrentIndex(idx)
+        else:
+            rating_combo.addItems(["— (no change)", "SFW", "Suggestive", "NSFW"])
         rating_combo.setStyleSheet(
             f"QComboBox {{"
             f" background: {theme._active['input_bg']}; color: {theme._active['text']};"
@@ -953,48 +974,60 @@ class LibraryDialog(QDialog):
         save_btn.setStyleSheet(theme.BTN_MAIN)
 
         def _do_save():
-            # Collect non-empty fields
-            updates = {}
-            for key, edit in meta_edits.items():
-                if edit.isEnabled():
+            import json as _json, hashlib
+
+            if single:
+                # Single file: save all fields (empty = clear)
+                data = {}
+                for key, edit in meta_edits.items():
                     val = edit.text().strip()
                     if val:
-                        updates[key] = val
-            rating = rating_combo.currentText()
-            if not rating.startswith("—"):
-                updates["rating"] = rating
+                        data[key] = val
+                rating = rating_combo.currentText()
+                if rating != "—":
+                    data["rating"] = rating
 
-            if not updates:
-                dlg.accept()
-                return
-
-            # Apply to each selected file
-            import json as _json
-            for file_path in paths:
-                # Load existing metadata
-                existing = {}
+                file_path = paths[0]
                 if self._db:
-                    existing = self._db.get_metadata(file_path)
-                if not existing:
-                    existing = _load_meta(self.app_settings, file_path)
-
-                # Merge updates into existing
-                existing.update(updates)
-
-                # Save to DB
-                if self._db:
-                    self._db.set_metadata(file_path, existing)
-
-                # Save to QSettings for backward compat
-                import hashlib
+                    self._db.set_metadata(file_path, data)
                 h = hashlib.md5(file_path.encode()).hexdigest()[:12]
                 self.app_settings.setValue(
                     f"metadata/{h}",
-                    _json.dumps(existing, ensure_ascii=False),
+                    _json.dumps(data, ensure_ascii=False),
                 )
+                self._meta_cache[file_path] = data
+            else:
+                # Multi file: only apply non-empty fields
+                updates = {}
+                for key, edit in meta_edits.items():
+                    if edit.isEnabled():
+                        val = edit.text().strip()
+                        if val:
+                            updates[key] = val
+                rating = rating_combo.currentText()
+                if not rating.startswith("—"):
+                    updates["rating"] = rating
 
-                # Update local cache
-                self._meta_cache[file_path] = existing
+                if not updates:
+                    dlg.accept()
+                    return
+
+                for file_path in paths:
+                    existing = {}
+                    if self._db:
+                        existing = self._db.get_metadata(file_path)
+                    if not existing:
+                        existing = _load_meta(self.app_settings, file_path)
+                    existing.update(updates)
+
+                    if self._db:
+                        self._db.set_metadata(file_path, existing)
+                    h = hashlib.md5(file_path.encode()).hexdigest()[:12]
+                    self.app_settings.setValue(
+                        f"metadata/{h}",
+                        _json.dumps(existing, ensure_ascii=False),
+                    )
+                    self._meta_cache[file_path] = existing
 
             dlg.accept()
             self._refresh_display()
