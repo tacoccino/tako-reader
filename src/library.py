@@ -460,23 +460,6 @@ class LibraryDialog(QDialog):
 
         # ── File list ──
         self._list = QListWidget()
-        # self._list.setStyleSheet(
-        #     f"QListWidget {{"
-        #     f" background: {theme._active['card_bg']};"
-        #     f" border: 1px solid {theme._active['border_light']};"
-        #     f" border-radius: 6px; padding: 4px;"
-        #     f"}}"
-        #     f" QListWidget::item {{"
-        #     f" color: {theme._active['text']};"
-        #     f" padding: 4px; border-radius: 4px;"
-        #     f"}}"
-        #     f" QListWidget::item:selected {{"
-        #     f" background: {theme.ACCENT}; color: #fff;"
-        #     f"}}"
-        #     f" QListWidget::item:hover {{"
-        #     f" background: {theme._active['hover_bg']};"
-        #     f"}}"
-        # )
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._apply_view_mode()
@@ -484,9 +467,6 @@ class LibraryDialog(QDialog):
 
         # ── Status ──
         self._status = QLabel("")
-        self._status.setStyleSheet(
-            f"color: {theme._active['text_muted']}; font-size: 9pt;"
-        )
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self._status)
 
