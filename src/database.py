@@ -87,9 +87,11 @@ class LibraryDB:
     # ── Path helpers ──────────────────────────────────────────────────────
 
     def rel_path(self, abs_path: str) -> str:
-        """Convert an absolute file path to a path relative to the library root."""
+        """Convert an absolute file path to a path relative to the library root.
+        Always uses forward slashes for cross-platform portability."""
         try:
-            return str(Path(abs_path).resolve().relative_to(self._root.resolve()))
+            rel = Path(abs_path).resolve().relative_to(self._root.resolve())
+            return rel.as_posix()
         except ValueError:
             return ""
 
@@ -118,12 +120,14 @@ class LibraryDB:
         rp = self.rel_path(abs_path)
         if not rp:
             return {}
-        row = self._conn.execute(
-            "SELECT * FROM metadata WHERE rel_path = ?", (rp,)
-        ).fetchone()
-        if not row:
-            return {}
-        return {k: row[k] for k in self._META_FIELDS if row[k]}
+        # Try forward slashes first, then backslashes for legacy entries
+        for try_path in (rp, rp.replace("/", "\\")):
+            row = self._conn.execute(
+                "SELECT * FROM metadata WHERE rel_path = ?", (try_path,)
+            ).fetchone()
+            if row:
+                return {k: row[k] for k in self._META_FIELDS if row[k]}
+        return {}
 
     def set_metadata(self, abs_path: str, data: dict):
         """Save metadata dict for a file (upsert)."""
@@ -145,13 +149,15 @@ class LibraryDB:
         self._conn.commit()
 
     def get_all_metadata(self) -> dict[str, dict]:
-        """Return metadata for all files. Keyed by rel_path."""
+        """Return metadata for all files. Keyed by rel_path (forward slashes)."""
         rows = self._conn.execute("SELECT * FROM metadata").fetchall()
         result = {}
         for row in rows:
             d = {k: row[k] for k in self._META_FIELDS if row[k]}
             if d:
-                result[row["rel_path"]] = d
+                # Normalize backslashes from Windows
+                rp = row["rel_path"].replace("\\", "/")
+                result[rp] = d
         return result
 
     # ── File state ────────────────────────────────────────────────────────
@@ -168,9 +174,13 @@ class LibraryDB:
         rp = self.rel_path(abs_path)
         if not rp:
             return {}
-        row = self._conn.execute(
-            "SELECT * FROM file_state WHERE rel_path = ?", (rp,)
-        ).fetchone()
+        row = None
+        for try_path in (rp, rp.replace("/", "\\")):
+            row = self._conn.execute(
+                "SELECT * FROM file_state WHERE rel_path = ?", (try_path,)
+            ).fetchone()
+            if row:
+                break
         if not row:
             return {}
         state = {}
@@ -245,5 +255,6 @@ class LibraryDB:
                     except Exception:
                         pass
             if state:
-                result[row["rel_path"]] = state
+                rp = row["rel_path"].replace("\\", "/")
+                result[rp] = state
         return result
