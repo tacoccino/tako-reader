@@ -7,6 +7,7 @@ keyed by path relative to the library root for portability.
 import json
 import shutil
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 
@@ -77,27 +78,31 @@ class LibraryDB:
         self._normalize_paths()
 
     def _normalize_paths(self):
-        """Fix backslash paths in existing entries — deduplicate if needed."""
+        """Fix backslash paths and Unicode normalization in existing entries."""
         for table in ("metadata", "file_state"):
             rows = self._conn.execute(
-                f"SELECT rel_path FROM {table} WHERE rel_path LIKE '%\\%'"
+                f"SELECT rel_path FROM {table}"
             ).fetchall()
             for row in rows:
                 old_path = row["rel_path"]
-                new_path = old_path.replace("\\", "/")
-                # Check if a forward-slash version already exists
+                new_path = unicodedata.normalize(
+                    "NFC", old_path.replace("\\", "/")
+                )
+                if old_path == new_path:
+                    continue
+                # Check if normalized version already exists
                 existing = self._conn.execute(
                     f"SELECT rel_path FROM {table} WHERE rel_path = ?",
                     (new_path,),
                 ).fetchone()
                 if existing:
-                    # Delete the backslash duplicate
+                    # Delete the non-normalized duplicate
                     self._conn.execute(
                         f"DELETE FROM {table} WHERE rel_path = ?",
                         (old_path,),
                     )
                 else:
-                    # Rename to forward slashes
+                    # Rename to normalized form
                     self._conn.execute(
                         f"UPDATE {table} SET rel_path = ? WHERE rel_path = ?",
                         (new_path, old_path),
@@ -117,10 +122,10 @@ class LibraryDB:
 
     def rel_path(self, abs_path: str) -> str:
         """Convert an absolute file path to a path relative to the library root.
-        Always uses forward slashes for cross-platform portability."""
+        Always uses forward slashes and NFC Unicode for cross-platform portability."""
         try:
             rel = Path(abs_path).resolve().relative_to(self._root.resolve())
-            return rel.as_posix()
+            return unicodedata.normalize("NFC", rel.as_posix())
         except ValueError:
             return ""
 
@@ -178,14 +183,13 @@ class LibraryDB:
         self._conn.commit()
 
     def get_all_metadata(self) -> dict[str, dict]:
-        """Return metadata for all files. Keyed by rel_path (forward slashes)."""
+        """Return metadata for all files. Keyed by rel_path (NFC, forward slashes)."""
         rows = self._conn.execute("SELECT * FROM metadata").fetchall()
         result = {}
         for row in rows:
             d = {k: row[k] for k in self._META_FIELDS if row[k]}
             if d:
-                # Normalize backslashes from Windows
-                rp = row["rel_path"].replace("\\", "/")
+                rp = unicodedata.normalize("NFC", row["rel_path"].replace("\\", "/"))
                 result[rp] = d
         return result
 
@@ -294,6 +298,6 @@ class LibraryDB:
                     except Exception:
                         pass
             if state:
-                rp = row["rel_path"].replace("\\", "/")
+                rp = unicodedata.normalize("NFC", row["rel_path"].replace("\\", "/"))
                 result[rp] = state
         return result
