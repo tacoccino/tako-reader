@@ -378,7 +378,7 @@ class SettingsDialog(QDialog):
         self._update_cache_size_label()
 
         # Clear local data
-        clear_local_btn = QPushButton("Clear Local Data…")
+        clear_local_btn = QPushButton("Clear Local Data")
         clear_local_btn.setFixedWidth(140)
         clear_local_btn.clicked.connect(self._clear_local_data)
         clear_local_container = QWidget()
