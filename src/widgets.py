@@ -7,6 +7,18 @@ marquee overlay, and thumbnail strip.
 import webbrowser
 from urllib.parse import quote as url_quote
 
+try:
+    from PyQt6 import sip as _sip
+    def _is_deleted(obj) -> bool:
+        return _sip.isdeleted(obj)
+except ImportError:
+    def _is_deleted(obj) -> bool:  # type: ignore[misc]
+        try:
+            obj.objectName()
+            return False
+        except RuntimeError:
+            return True
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QSizePolicy, QRubberBand,
@@ -246,7 +258,11 @@ class PageView(QLabel):
         src_x = (pos.x() - off_x) / self._scale
         src_y = (pos.y() - off_y) / self._scale
 
+        live_regions = []
         for region, card_ref in self._ocr_regions:
+            if _is_deleted(card_ref):
+                continue  # prune stale refs
+            live_regions.append((region, card_ref))
             if region.contains(int(src_x), int(src_y)):
                 if self._hovered_region is not region:
                     self._hovered_region = region
@@ -265,14 +281,18 @@ class PageView(QLabel):
                     card_ref._highlight_overlay.show()
                     card_ref._highlight_overlay.raise_()
                     self._hovered_card_ref = card_ref
+                self._ocr_regions = live_regions
                 return
+        self._ocr_regions = live_regions
 
         # No hit — clear if we were hovering a region
         if self._hovered_region is not None:
             self._hovered_region = None
             self.clear_highlight()
             if hasattr(self, '_hovered_card_ref') and self._hovered_card_ref:
-                if hasattr(self._hovered_card_ref, '_highlight_overlay') and self._hovered_card_ref._highlight_overlay:
+                if (not _is_deleted(self._hovered_card_ref)
+                        and hasattr(self._hovered_card_ref, '_highlight_overlay')
+                        and self._hovered_card_ref._highlight_overlay):
                     self._hovered_card_ref._highlight_overlay.hide()
                 self._hovered_card_ref = None
 
