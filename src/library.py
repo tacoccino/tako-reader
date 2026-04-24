@@ -42,8 +42,6 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".avif"
 THUMB_W, THUMB_H = 120, 160
 LIST_ICON_W, LIST_ICON_H = 50, 70
 
-RATING_FILTERS = ["Show All", "Hide NSFW", "SFW Only", "NSFW Only"]
-
 
 def _nat_key(s: str):
     """Natural sort key."""
@@ -361,7 +359,6 @@ class LibraryDialog(QDialog):
         self._meta_cache: dict[str, dict] = {}  # path -> metadata dict
         self._thumb_worker: ThumbnailWorker | None = None
         self._view_mode = app_settings.value("library/view_mode", "list")
-        self._rating_filter_idx = 0  # index into RATING_FILTERS
         self._item_map: dict[str, QListWidgetItem] = {}
         self._group_items: list[QListWidgetItem] = []  # group header items
         self._db: LibraryDB | None = None
@@ -397,10 +394,45 @@ class LibraryDialog(QDialog):
         header.addWidget(title, stretch=1)
 
         # Rating filter
-        self._rating_btn = QPushButton("Show All")
-        self._rating_btn.setStyleSheet(theme.BTN_MAIN)
-        self._rating_btn.setFixedWidth(90)
-        self._rating_btn.clicked.connect(self._cycle_rating_filter)
+        from PyQt6.QtWidgets import QMenu
+        self._rating_btn = QPushButton()
+        self._rating_btn.setFixedSize(30, 30)
+        self._rating_btn.setToolTip("Rating filter")
+        ic_filter = load_icon("filter")
+        if not ic_filter.isNull():
+            self._rating_btn.setIcon(ic_filter)
+            self._rating_btn.setIconSize(QSize(16, 16))
+        else:
+            self._rating_btn.setText("▼")
+
+        self._rating_menu = QMenu(self._rating_btn)
+        self._rating_menu.setStyleSheet(
+            f"QMenu {{"
+            f" background: {theme._active['menu_bg']};"
+            f" color: {theme._active['text']};"
+            f" border: 1px solid {theme._active['border']};"
+            f" border-radius: 4px; padding: 4px;"
+            f"}}"
+        )
+
+        from PyQt6.QtWidgets import QWidgetAction, QCheckBox
+        self._rating_checks: dict[str, QCheckBox] = {}
+        for label in ("SFW", "Suggestive", "NSFW", "No Rating"):
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            cb.setStyleSheet(
+                f"QCheckBox {{"
+                f" color: {theme._active['text']};"
+                f" padding: 4px 8px; font-size: 9pt;"
+                f"}}"
+            )
+            cb.stateChanged.connect(self._on_rating_filter_changed)
+            wa = QWidgetAction(self._rating_menu)
+            wa.setDefaultWidget(cb)
+            self._rating_menu.addAction(wa)
+            self._rating_checks[label] = cb
+
+        self._rating_btn.setMenu(self._rating_menu)
         header.addWidget(self._rating_btn)
 
         # Sort
@@ -569,23 +601,16 @@ class LibraryDialog(QDialog):
 
     # ── Rating filter ────────────────────────────────────────────────────────
 
-    def _cycle_rating_filter(self):
-        self._rating_filter_idx = (self._rating_filter_idx + 1) % len(RATING_FILTERS)
-        self._rating_btn.setText(RATING_FILTERS[self._rating_filter_idx])
+    def _on_rating_filter_changed(self):
         self._refresh_display()
 
     def _passes_rating_filter(self, meta: dict) -> bool:
-        mode = RATING_FILTERS[self._rating_filter_idx]
         rating = meta.get("rating", "")
-        if mode == "Show All":
-            return True
-        elif mode == "Hide NSFW":
-            return rating != "NSFW"
-        elif mode == "SFW Only":
-            return rating == "SFW" or rating == ""
-        elif mode == "NSFW Only":
-            return rating == "NSFW"
-        return True
+        if rating == "":
+            return self._rating_checks["No Rating"].isChecked()
+        return self._rating_checks.get(
+            rating, self._rating_checks["No Rating"]
+        ).isChecked()
 
     # ── Library loading ──────────────────────────────────────────────────────
 
