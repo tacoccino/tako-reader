@@ -889,7 +889,6 @@ class LibraryDialog(QDialog):
             ("publisher",  "Publisher",    True),
             ("year",       "Year",        True),
             ("language",   "Language",    True),
-            ("tags",       "Tags",        True),
             ("notes",      "Notes",       True),
         ]
 
@@ -905,15 +904,30 @@ class LibraryDialog(QDialog):
             if not enabled:
                 edit.setStyleSheet(disabled_style)
                 edit.setPlaceholderText("(per-file)")
-            elif key == "tags":
-                edit.setPlaceholderText("comma-separated")
             if single:
                 edit.setText(prefill.get(key, ""))
             meta_edits[key] = edit
             meta_grid.addWidget(edit, row, 1)
 
+        # Tags (custom widget)
+        tags_row = len(meta_fields)
+        tags_lbl = QLabel("Tags")
+        tags_lbl.setStyleSheet(label_style)
+        tags_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        meta_grid.addWidget(tags_lbl, tags_row, 0)
+
+        from tag_input import TagInputWidget
+        available_tags = []
+        if self._db:
+            available_tags = list(self._db.get_all_tags().keys())
+        tag_widget = TagInputWidget(available_tags=available_tags)
+        if single:
+            existing_tags = [t.strip() for t in prefill.get("tags", "").split(",") if t.strip()]
+            tag_widget.set_tags(existing_tags)
+        meta_grid.addWidget(tag_widget, tags_row, 1)
+
         # Rating
-        rating_row = len(meta_fields)
+        rating_row = tags_row + 1
         rating_lbl = QLabel("Rating")
         rating_lbl.setStyleSheet(label_style)
         rating_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -950,13 +964,18 @@ class LibraryDialog(QDialog):
         def _do_save():
             import json as _json, hashlib
 
+            new_tags = tag_widget.get_tags()
+
             if single:
-                # Single file: save all fields (empty = clear)
                 data = {}
                 for key, edit in meta_edits.items():
                     val = edit.text().strip()
                     if val:
                         data[key] = val
+                if new_tags:
+                    data["tags"] = ", ".join(new_tags)
+                    if self._db:
+                        self._db.ensure_tags(new_tags)
                 rating = rating_combo.currentText()
                 if rating != "—":
                     data["rating"] = rating
@@ -971,13 +990,16 @@ class LibraryDialog(QDialog):
                 )
                 self._meta_cache[file_path] = data
             else:
-                # Multi file: only apply non-empty fields
                 updates = {}
                 for key, edit in meta_edits.items():
                     if edit.isEnabled():
                         val = edit.text().strip()
                         if val:
                             updates[key] = val
+                if new_tags:
+                    updates["tags"] = ", ".join(new_tags)
+                    if self._db:
+                        self._db.ensure_tags(new_tags)
                 rating = rating_combo.currentText()
                 if not rating.startswith("—"):
                     updates["rating"] = rating

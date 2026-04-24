@@ -74,8 +74,15 @@ class LibraryDB:
                 ocr_results     TEXT DEFAULT '[]'
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                name    TEXT PRIMARY KEY,
+                color   TEXT DEFAULT 'gray'
+            )
+        """)
         c.commit()
         self._normalize_paths()
+        self.collect_tags_from_metadata()
 
     def _normalize_paths(self):
         """Fix backslash paths and Unicode normalization in existing entries."""
@@ -301,3 +308,77 @@ class LibraryDB:
                 rp = unicodedata.normalize("NFC", row["rel_path"].replace("\\", "/"))
                 result[rp] = state
         return result
+
+    # ── Tag registry ──────────────────────────────────────────────────────
+
+    def get_all_tags(self) -> dict[str, str]:
+        """Return all registered tags as {name: color}."""
+        rows = self._conn.execute("SELECT name, color FROM tags").fetchall()
+        return {row["name"]: row["color"] for row in rows}
+
+    def ensure_tags(self, tag_names: list[str]):
+        """Register tags if they don't already exist (default color: gray)."""
+        for name in tag_names:
+            name = name.strip()
+            if not name:
+                continue
+            self._conn.execute(
+                "INSERT OR IGNORE INTO tags (name, color) VALUES (?, 'gray')",
+                (name,),
+            )
+        self._conn.commit()
+
+    def set_tag_color(self, name: str, color: str):
+        """Update a tag's color."""
+        self._conn.execute(
+            "UPDATE tags SET color = ? WHERE name = ?", (color, name)
+        )
+        self._conn.commit()
+
+    def rename_tag(self, old_name: str, new_name: str):
+        """Rename a tag across all files and the tag registry."""
+        self._conn.execute(
+            "UPDATE tags SET name = ? WHERE name = ?", (new_name, old_name)
+        )
+        rows = self._conn.execute(
+            "SELECT rel_path, tags FROM metadata WHERE tags LIKE ?",
+            (f"%{old_name}%",),
+        ).fetchall()
+        for row in rows:
+            tag_list = [t.strip() for t in row["tags"].split(",") if t.strip()]
+            tag_list = [new_name if t == old_name else t for t in tag_list]
+            self._conn.execute(
+                "UPDATE metadata SET tags = ? WHERE rel_path = ?",
+                (", ".join(tag_list), row["rel_path"]),
+            )
+        self._conn.commit()
+
+    def delete_tag(self, name: str):
+        """Remove a tag from the registry and all files."""
+        self._conn.execute("DELETE FROM tags WHERE name = ?", (name,))
+        rows = self._conn.execute(
+            "SELECT rel_path, tags FROM metadata WHERE tags LIKE ?",
+            (f"%{name}%",),
+        ).fetchall()
+        for row in rows:
+            tag_list = [t.strip() for t in row["tags"].split(",") if t.strip()]
+            tag_list = [t for t in tag_list if t != name]
+            self._conn.execute(
+                "UPDATE metadata SET tags = ? WHERE rel_path = ?",
+                (", ".join(tag_list), row["rel_path"]),
+            )
+        self._conn.commit()
+
+    def collect_tags_from_metadata(self):
+        """Scan all metadata tag strings and ensure each tag is in the registry."""
+        rows = self._conn.execute(
+            "SELECT tags FROM metadata WHERE tags != ''"
+        ).fetchall()
+        all_tags = set()
+        for row in rows:
+            for t in row["tags"].split(","):
+                t = t.strip()
+                if t:
+                    all_tags.add(t)
+        if all_tags:
+            self.ensure_tags(list(all_tags))

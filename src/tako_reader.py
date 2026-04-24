@@ -2242,7 +2242,6 @@ class TakoReader(QMainWindow):
             ("publisher",  "Publisher"),
             ("year",       "Year"),
             ("language",   "Language"),
-            ("tags",       "Tags"),
             ("notes",      "Notes"),
         ]
 
@@ -2255,13 +2254,27 @@ class TakoReader(QMainWindow):
 
             edit = QLineEdit()
             edit.setText(meta.get(key, ""))
-            if key == "tags":
-                edit.setPlaceholderText("comma-separated")
             meta_edits[key] = edit
             meta_grid.addWidget(edit, row, 1)
 
+        # Tags (custom widget)
+        tags_row = len(meta_fields)
+        tags_lbl = QLabel("Tags")
+        tags_lbl.setStyleSheet(label_style)
+        tags_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        meta_grid.addWidget(tags_lbl, tags_row, 0)
+
+        from tag_input import TagInputWidget
+        available_tags = []
+        if self._db:
+            available_tags = list(self._db.get_all_tags().keys())
+        tag_widget = TagInputWidget(available_tags=available_tags)
+        existing_tags = [t.strip() for t in meta.get("tags", "").split(",") if t.strip()]
+        tag_widget.set_tags(existing_tags)
+        meta_grid.addWidget(tag_widget, tags_row, 1)
+
         # Content rating (combobox, separate from the text fields)
-        rating_row = len(meta_fields)
+        rating_row = tags_row + 1
         rating_lbl = QLabel("Rating")
         rating_lbl.setStyleSheet(label_style)
         rating_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2305,6 +2318,13 @@ class TakoReader(QMainWindow):
                 val = edit.text().strip()
                 if val:
                     data[key] = val
+            # Tags from widget
+            tags = tag_widget.get_tags()
+            if tags:
+                data["tags"] = ", ".join(tags)
+                # Register new tags in DB
+                if self._db:
+                    self._db.ensure_tags(tags)
             rating = rating_combo.currentText()
             if rating != "—":
                 data["rating"] = rating
