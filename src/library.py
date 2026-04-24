@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QListWidget, QListWidgetItem, QFileDialog,
     QWidget, QApplication, QComboBox, QGridLayout, QFrame,
+    QScrollArea,
 )
 from PyQt6.QtCore import (
     Qt, QSettings, QSize, QThread, pyqtSignal, QStandardPaths,
@@ -429,6 +430,14 @@ class LibraryDialog(QDialog):
         self._refresh_btn.clicked.connect(self._load_library)
         header.addWidget(self._refresh_btn)
 
+        # Manage Tags
+        self._manage_tags_btn = QPushButton()
+        self._manage_tags_btn.setFixedSize(30, 30)
+        self._manage_tags_btn.setToolTip("Manage Tags")
+        self._manage_tags_btn.setText("🏷")
+        self._manage_tags_btn.clicked.connect(self._show_tag_manager)
+        header.addWidget(self._manage_tags_btn)
+
         root.addLayout(header)
 
         # ── Search bar + view toggle ──
@@ -457,6 +466,29 @@ class LibraryDialog(QDialog):
         search_row.addWidget(self._view_btn)
 
         root.addLayout(search_row)
+
+        # ── Tag filter bar ──
+        self._tag_filter_area = QScrollArea()
+        self._tag_filter_area.setWidgetResizable(True)
+        self._tag_filter_area.setFixedHeight(36)
+        self._tag_filter_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._tag_filter_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._tag_filter_area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
+        self._tag_filter_container = QWidget()
+        self._tag_filter_layout = QHBoxLayout(self._tag_filter_container)
+        self._tag_filter_layout.setContentsMargins(0, 0, 0, 0)
+        self._tag_filter_layout.setSpacing(6)
+        self._tag_filter_layout.addStretch()
+        self._tag_filter_area.setWidget(self._tag_filter_container)
+        self._tag_filter_area.setVisible(False)  # hidden until tags exist
+        self._tag_filters: dict[str, str] = {}  # tag_name -> "include" | "exclude"
+        root.addWidget(self._tag_filter_area)
 
         # ── File list ──
         self._list = QListWidget()
@@ -607,6 +639,7 @@ class LibraryDialog(QDialog):
                 )
 
         self._refresh_display()
+        self._rebuild_tag_filter_bar()
 
         # Start thumbnail generation
         if self._entries:
@@ -614,10 +647,103 @@ class LibraryDialog(QDialog):
             self._thumb_worker.thumbnail_ready.connect(self._on_thumb_ready)
             self._thumb_worker.start()
 
+    # ── Tag filter bar ───────────────────────────────────────────────────
+
+    def _rebuild_tag_filter_bar(self):
+        """Populate the tag filter bar with pills for all used tags."""
+        while self._tag_filter_layout.count() > 0:
+            item = self._tag_filter_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        tag_counts: dict[str, int] = {}
+        for meta in self._meta_cache.values():
+            for t in meta.get("tags", "").split(","):
+                t = t.strip()
+                if t:
+                    tag_counts[t] = tag_counts.get(t, 0) + 1
+
+        if not tag_counts:
+            self._tag_filter_area.setVisible(False)
+            self._tag_filters.clear()
+            return
+
+        self._tag_filter_area.setVisible(True)
+        sorted_tags = sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
+
+        for tag_name, count in sorted_tags:
+            btn = QPushButton(f"{tag_name} ({count})")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(26)
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            state = self._tag_filters.get(tag_name, "off")
+            btn.setStyleSheet(self._tag_filter_pill_style(state))
+            btn.clicked.connect(
+                lambda _, t=tag_name, b=btn: self._on_tag_left_click(t, b)
+            )
+            btn.customContextMenuRequested.connect(
+                lambda _, t=tag_name, b=btn: self._on_tag_right_click(t, b)
+            )
+            self._tag_filter_layout.addWidget(btn)
+
+        self._tag_filter_layout.addStretch()
+
+    def _tag_filter_pill_style(self, state: str) -> str:
+        if state == "include":
+            return (
+                f"QPushButton {{"
+                f" background: {theme.ACCENT}; color: #fff;"
+                f" border: none; border-radius: 12px;"
+                f" padding: 2px 10px; font-size: 8pt;"
+                f"}}"
+            )
+        elif state == "exclude":
+            return (
+                f"QPushButton {{"
+                f" background: #a04040; color: #fff;"
+                f" border: none; border-radius: 12px;"
+                f" padding: 2px 10px; font-size: 8pt;"
+                f" text-decoration: line-through;"
+                f"}}"
+            )
+        return (
+            f"QPushButton {{"
+            f" background: {theme._active['border_light']};"
+            f" color: {theme._active['text']};"
+            f" border: none; border-radius: 12px;"
+            f" padding: 2px 10px; font-size: 8pt;"
+            f"}}"
+            f" QPushButton:hover {{"
+            f" background: {theme._active['hover_bg']};"
+            f"}}"
+        )
+
+    def _on_tag_left_click(self, tag_name: str, btn: QPushButton):
+        """Left click: toggle between off and include (whitelist)."""
+        current = self._tag_filters.get(tag_name, "off")
+        if current == "include":
+            del self._tag_filters[tag_name]
+            btn.setStyleSheet(self._tag_filter_pill_style("off"))
+        else:
+            self._tag_filters[tag_name] = "include"
+            btn.setStyleSheet(self._tag_filter_pill_style("include"))
+        self._refresh_display()
+
+    def _on_tag_right_click(self, tag_name: str, btn: QPushButton):
+        """Right click: toggle between off and exclude (blacklist)."""
+        current = self._tag_filters.get(tag_name, "off")
+        if current == "exclude":
+            del self._tag_filters[tag_name]
+            btn.setStyleSheet(self._tag_filter_pill_style("off"))
+        else:
+            self._tag_filters[tag_name] = "exclude"
+            btn.setStyleSheet(self._tag_filter_pill_style("exclude"))
+        self._refresh_display()
+
     # ── Display refresh ──────────────────────────────────────────────────────
 
     def _refresh_display(self):
-        """Apply search, rating filter, sort, grouping, and repopulate."""
+        """Apply search, rating filter, tag filter, sort, grouping, and repopulate."""
         search = self._search.text().strip().lower()
 
         # Filter
@@ -628,6 +754,22 @@ class LibraryDialog(QDialog):
             # Rating filter
             if not self._passes_rating_filter(meta):
                 continue
+
+            # Tag filter
+            if self._tag_filters:
+                entry_tags = set(
+                    t.strip() for t in meta.get("tags", "").split(",") if t.strip()
+                )
+                include_tags = {
+                    t for t, s in self._tag_filters.items() if s == "include"
+                }
+                exclude_tags = {
+                    t for t, s in self._tag_filters.items() if s == "exclude"
+                }
+                if include_tags and not include_tags.issubset(entry_tags):
+                    continue
+                if exclude_tags and exclude_tags.intersection(entry_tags):
+                    continue
 
             # Search filter — match against name, folder, and all metadata
             if search:
@@ -911,23 +1053,42 @@ class LibraryDialog(QDialog):
 
         # Tags (custom widget)
         tags_row = len(meta_fields)
-        tags_lbl = QLabel("Tags")
-        tags_lbl.setStyleSheet(label_style)
-        tags_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
-        meta_grid.addWidget(tags_lbl, tags_row, 0)
-
         from tag_input import TagInputWidget
         available_tags = []
         if self._db:
             available_tags = list(self._db.get_all_tags().keys())
-        tag_widget = TagInputWidget(available_tags=available_tags)
+
+        tag_remove_widget = None
         if single:
+            tags_lbl = QLabel("Tags")
+            tags_lbl.setStyleSheet(label_style)
+            tags_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            meta_grid.addWidget(tags_lbl, tags_row, 0)
+
+            tag_widget = TagInputWidget(available_tags=available_tags)
             existing_tags = [t.strip() for t in prefill.get("tags", "").split(",") if t.strip()]
             tag_widget.set_tags(existing_tags)
-        meta_grid.addWidget(tag_widget, tags_row, 1)
+            meta_grid.addWidget(tag_widget, tags_row, 1)
+        else:
+            add_lbl = QLabel("Add Tags")
+            add_lbl.setStyleSheet(label_style)
+            add_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            meta_grid.addWidget(add_lbl, tags_row, 0)
+
+            tag_widget = TagInputWidget(available_tags=available_tags)
+            meta_grid.addWidget(tag_widget, tags_row, 1)
+
+            remove_row = tags_row + 1
+            remove_lbl = QLabel("Remove Tags")
+            remove_lbl.setStyleSheet(label_style)
+            remove_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            meta_grid.addWidget(remove_lbl, remove_row, 0)
+
+            tag_remove_widget = TagInputWidget(available_tags=available_tags)
+            meta_grid.addWidget(tag_remove_widget, remove_row, 1)
 
         # Rating
-        rating_row = tags_row + 1
+        rating_row = tags_row + (1 if single else 2)
         rating_lbl = QLabel("Rating")
         rating_lbl.setStyleSheet(label_style)
         rating_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -964,7 +1125,8 @@ class LibraryDialog(QDialog):
         def _do_save():
             import json as _json, hashlib
 
-            new_tags = tag_widget.get_tags()
+            add_tags = tag_widget.get_tags()
+            remove_tags = tag_remove_widget.get_tags() if tag_remove_widget else []
 
             if single:
                 data = {}
@@ -972,10 +1134,10 @@ class LibraryDialog(QDialog):
                     val = edit.text().strip()
                     if val:
                         data[key] = val
-                if new_tags:
-                    data["tags"] = ", ".join(new_tags)
+                if add_tags:
+                    data["tags"] = ", ".join(add_tags)
                     if self._db:
-                        self._db.ensure_tags(new_tags)
+                        self._db.ensure_tags(add_tags)
                 rating = rating_combo.currentText()
                 if rating != "—":
                     data["rating"] = rating
@@ -996,17 +1158,17 @@ class LibraryDialog(QDialog):
                         val = edit.text().strip()
                         if val:
                             updates[key] = val
-                if new_tags:
-                    updates["tags"] = ", ".join(new_tags)
-                    if self._db:
-                        self._db.ensure_tags(new_tags)
                 rating = rating_combo.currentText()
                 if not rating.startswith("—"):
                     updates["rating"] = rating
 
-                if not updates:
+                has_tag_changes = bool(add_tags or remove_tags)
+                if not updates and not has_tag_changes:
                     dlg.accept()
                     return
+
+                if add_tags and self._db:
+                    self._db.ensure_tags(add_tags)
 
                 for file_path in paths:
                     existing = {}
@@ -1015,6 +1177,21 @@ class LibraryDialog(QDialog):
                     if not existing:
                         existing = _load_meta(self.app_settings, file_path)
                     existing.update(updates)
+
+                    # Apply tag add/remove
+                    if has_tag_changes:
+                        current_tags = [
+                            t.strip() for t in existing.get("tags", "").split(",")
+                            if t.strip()
+                        ]
+                        # Remove tags
+                        for rt in remove_tags:
+                            current_tags = [t for t in current_tags if t != rt]
+                        # Add tags (avoid duplicates)
+                        for at in add_tags:
+                            if at not in current_tags:
+                                current_tags.append(at)
+                        existing["tags"] = ", ".join(current_tags) if current_tags else ""
 
                     if self._db:
                         self._db.set_metadata(file_path, existing)
@@ -1038,6 +1215,207 @@ class LibraryDialog(QDialog):
 
         root.addLayout(btn_row)
         dlg.exec()
+
+    def _show_tag_manager(self):
+        """Show a dialog for managing tags (rename, merge, delete)."""
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+        if not self._db:
+            return
+
+        # Ensure tags table is up to date
+        self._db.collect_tags_from_metadata()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Manage Tags")
+        dlg.setMinimumWidth(380)
+        dlg.setMinimumHeight(350)
+        dlg.setModal(True)
+        dlg.setStyleSheet(
+            f"QDialog {{ background: {theme._active['window_bg']};"
+            f" color: {theme._active['text']}; }}"
+        )
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(10)
+
+        heading = QLabel("Manage Tags")
+        heading.setFont(QFont("", 14, QFont.Weight.Bold))
+        heading.setStyleSheet(f"color: {theme._active['text']};")
+        root.addWidget(heading)
+
+        hint = QLabel("Select a tag to rename, merge, or delete it.")
+        hint.setStyleSheet(
+            f"color: {theme._active['text_muted']}; font-size: 8pt;"
+        )
+        root.addWidget(hint)
+
+        # Tag list
+        tag_list = QListWidget()
+        tag_list.setStyleSheet(
+            f"QListWidget {{"
+            f" background: {theme._active['card_bg']};"
+            f" border: 1px solid {theme._active['border_light']};"
+            f" border-radius: 6px; padding: 4px;"
+            f"}}"
+            f" QListWidget::item {{"
+            f" color: {theme._active['text']};"
+            f" padding: 6px 8px; border-radius: 4px;"
+            f"}}"
+            f" QListWidget::item:selected {{"
+            f" background: {theme.ACCENT}; color: #fff;"
+            f"}}"
+            f" QListWidget::item:hover {{"
+            f" background: {theme._active['hover_bg']};"
+            f"}}"
+        )
+        root.addWidget(tag_list, stretch=1)
+
+        def _populate():
+            tag_list.clear()
+            # Count usage from metadata
+            tag_counts: dict[str, int] = {}
+            all_meta = self._db.get_all_metadata()
+            for meta in all_meta.values():
+                for t in meta.get("tags", "").split(","):
+                    t = t.strip()
+                    if t:
+                        tag_counts[t] = tag_counts.get(t, 0) + 1
+            # Also include registered tags with 0 count
+            for name in self._db.get_all_tags():
+                if name not in tag_counts:
+                    tag_counts[name] = 0
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
+            for name, count in sorted_tags:
+                item = QListWidgetItem(f"{name}  ({count})")
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                tag_list.addItem(item)
+
+        _populate()
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        rename_btn = QPushButton("Rename")
+        rename_btn.setStyleSheet(theme.BTN_MAIN)
+        def _rename():
+            item = tag_list.currentItem()
+            if not item:
+                return
+            old_name = item.data(Qt.ItemDataRole.UserRole)
+            new_name, ok = QInputDialog.getText(
+                dlg, "Rename Tag",
+                f"Rename \"{old_name}\" to:",
+                text=old_name,
+            )
+            new_name = new_name.strip()
+            if not ok or not new_name or new_name == old_name:
+                return
+            self._db.rename_tag(old_name, new_name)
+            # Update local meta cache
+            for path, meta in self._meta_cache.items():
+                tags_str = meta.get("tags", "")
+                tag_list_items = [t.strip() for t in tags_str.split(",") if t.strip()]
+                if old_name in tag_list_items:
+                    tag_list_items = [
+                        new_name if t == old_name else t for t in tag_list_items
+                    ]
+                    meta["tags"] = ", ".join(tag_list_items)
+            _populate()
+        rename_btn.clicked.connect(_rename)
+        btn_row.addWidget(rename_btn)
+
+        merge_btn = QPushButton("Merge")
+        merge_btn.setStyleSheet(theme.BTN_MAIN)
+        def _merge():
+            selected = tag_list.selectedItems()
+            if not selected:
+                return
+            source_name = selected[0].data(Qt.ItemDataRole.UserRole)
+            # Get list of other tags to merge into
+            all_tags = [
+                tag_list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(tag_list.count())
+            ]
+            other_tags = [t for t in all_tags if t != source_name]
+            if not other_tags:
+                return
+            target_name, ok = QInputDialog.getItem(
+                dlg, "Merge Tag",
+                f"Merge \"{source_name}\" into:",
+                other_tags, 0, False,
+            )
+            if not ok or not target_name:
+                return
+            # Rename source → target (this merges them)
+            self._db.rename_tag(source_name, target_name)
+            # Update local meta cache
+            for path, meta in self._meta_cache.items():
+                tags_str = meta.get("tags", "")
+                tag_items = [t.strip() for t in tags_str.split(",") if t.strip()]
+                if source_name in tag_items:
+                    tag_items = [
+                        target_name if t == source_name else t for t in tag_items
+                    ]
+                    # Remove duplicates while preserving order
+                    seen = set()
+                    deduped = []
+                    for t in tag_items:
+                        if t not in seen:
+                            seen.add(t)
+                            deduped.append(t)
+                    meta["tags"] = ", ".join(deduped)
+            _populate()
+        merge_btn.clicked.connect(_merge)
+        btn_row.addWidget(merge_btn)
+
+        delete_btn = QPushButton("Delete")
+        delete_btn.setStyleSheet(theme.BTN_MAIN)
+        def _delete():
+            item = tag_list.currentItem()
+            if not item:
+                return
+            name = item.data(Qt.ItemDataRole.UserRole)
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Delete Tag")
+            msg.setText(
+                f"Delete the tag \"{name}\"?\n\n"
+                f"This will remove it from all files."
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if msg.exec() != QMessageBox.StandardButton.Yes:
+                return
+            self._db.delete_tag(name)
+            # Update local meta cache
+            for path, meta in self._meta_cache.items():
+                tags_str = meta.get("tags", "")
+                tag_items = [t.strip() for t in tags_str.split(",") if t.strip()]
+                if name in tag_items:
+                    tag_items = [t for t in tag_items if t != name]
+                    meta["tags"] = ", ".join(tag_items)
+            _populate()
+        delete_btn.clicked.connect(_delete)
+        btn_row.addWidget(delete_btn)
+
+        btn_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(theme.BTN_MAIN)
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+
+        root.addLayout(btn_row)
+
+        dlg.exec()
+
+        # Refresh library display and tag bar after changes
+        self._refresh_display()
+        self._rebuild_tag_filter_bar()
 
     def closeEvent(self, event):
         if self._thumb_worker and self._thumb_worker.isRunning():
